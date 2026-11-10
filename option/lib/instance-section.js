@@ -47,38 +47,77 @@
     }
   };
 
+  function pickElement(src, key){
+    return (src && src[key]) ? src[key] : null;
+  }
+
+  function resolveElements(els){
+    const src = els || {};
+    const keys = [
+      'section',
+      'table',
+      'tbody',
+      'addBtn',
+      'modal',
+      'dialog',
+      'prefixInput',
+      'regionSelect',
+      'prefixErr',
+      'previewUrl',
+      'copyUrlBtn',
+      'copyPlaceholderBtn',
+      'placeholderEl',
+      'placeholderValue',
+      'cancelBtn',
+      'saveBtn',
+      'deleteModal',
+      'deleteDialog',
+      'deleteSummary',
+      'deleteCancelBtn',
+      'deleteConfirmBtn',
+    ];
+    const out = {};
+    keys.forEach((key) => {
+      out[key] = pickElement(src, key);
+    });
+    return {
+      section: out.section,
+      table: out.table,
+      tbody: out.tbody,
+      addBtn: out.addBtn,
+      modal: out.modal,
+      dialog: out.dialog,
+      prefixInput: out.prefixInput,
+      regionSelect: out.regionSelect,
+      prefixErr: out.prefixErr,
+      previewUrlEl: out.previewUrl,
+      copyUrlBtn: out.copyUrlBtn,
+      copyPlaceholderBtn: out.copyPlaceholderBtn,
+      placeholderEl: out.placeholderEl,
+      placeholderValueEl: out.placeholderValue,
+      cancelBtn: out.cancelBtn,
+      saveBtn: out.saveBtn,
+      deleteModal: out.deleteModal,
+      deleteDialog: out.deleteDialog,
+      deleteSummary: out.deleteSummary,
+      deleteCancelBtn: out.deleteCancelBtn,
+      deleteConfirmBtn: out.deleteConfirmBtn,
+    };
+  }
+
+  function bindControllerState(ctrl, opts){
+    ctrl.opts = opts || {};
+    const els = resolveElements(ctrl.opts.els);
+    Object.assign(ctrl, els);
+    ctrl.store = ctrl.opts.store || null;
+    ctrl._pendingAnchor = null;
+    ctrl._deletingInstance = false;
+    ctrl._currentInstance = null;
+  }
+
   class NqaInstanceSection {
     constructor(opts) {
-      this.opts = opts || {};
-      const els = this.opts.els || {};
-      this.section = els.section || null;
-      this.table = els.table || null;
-      this.tbody = els.tbody || null;
-      this.addBtn = els.addBtn || null;
-      this.modal = els.modal || null;
-      this.dialog = els.dialog || null;
-      this.prefixInput = els.prefixInput || null;
-      this.regionSelect = els.regionSelect || null;
-      this.prefixErr = els.prefixErr || null;
-      this.previewUrlEl = els.previewUrl || null;
-      this.copyUrlBtn = els.copyUrlBtn || null;
-      this.copyPlaceholderBtn = els.copyPlaceholderBtn || null;
-      this.placeholderEl = els.placeholderEl || null;
-      this.placeholderValueEl = els.placeholderValue || null;
-      this.cancelBtn = els.cancelBtn || null;
-      this.saveBtn = els.saveBtn || null;
-      // Reuse shared delete modal
-      this.deleteModal = els.deleteModal || null;
-      this.deleteDialog = els.deleteDialog || null;
-      this.deleteSummary = els.deleteSummary || null;
-      this.deleteCancelBtn = els.deleteCancelBtn || null;
-      this.deleteConfirmBtn = els.deleteConfirmBtn || null;
-
-      this.store = this.opts.store || null;
-
-      this._pendingAnchor = null;
-      this._deletingInstance = false;
-      this._currentInstance = null;
+      bindControllerState(this, opts);
     }
 
     attach() {
@@ -124,25 +163,36 @@
           if (this.tbody) this.tbody.innerHTML = '';
           return;
         }
-        const esc = (s) => String(s ?? '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
-        // Preserve original tenant casing in UI; fallback to prefix when name is absent.
-        const displayName = esc(this._currentInstance.name || this._currentInstance.prefix || '');
-        const regionKey = this._currentInstance.region;
-        const region = esc(regionKey ? (REGION_LABELS[regionKey] || regionKey) : '');
-        const url = esc(this._currentInstance.url || '');
-        const placeholderSource = this._currentInstance.prefix || this._currentInstance.name || '';
-        const placeholderValue = placeholderSource ? `= ${esc(placeholderSource)}` : '= —';
-        const detailsHtml = `
+        const rows = this._buildInstanceRow(this._currentInstance, locked);
+        if (this.tbody) this.tbody.innerHTML = rows;
+      } catch (_) {
+        if (this.table) this.table.style.display = 'none';
+        if (this.addBtn) this.addBtn.disabled = false;
+      }
+    }
+
+    _escapeHtml(value) {
+      return String(value ?? '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+    }
+
+    _buildInstanceRow(instance, locked) {
+      const esc = (value) => this._escapeHtml(value);
+      // Preserve original tenant casing in UI; fallback to prefix when name is absent.
+      const displayName = esc(instance?.name || instance?.prefix || '');
+      const regionKey = instance?.region;
+      const region = esc(regionKey ? (REGION_LABELS[regionKey] || regionKey) : '');
+      const url = esc(instance?.url || '');
+      const placeholderValue = this._buildPlaceholderValue(instance, esc);
+      const detailsHtml = `
           <div class="inst-row-url">${url}</div>
           <div class="inst-row-placeholder">Placeholder&nbsp;<code>${PLACEHOLDER_TOKEN}</code><span class="placeholder-value">${placeholderValue}</span></div>
         `;
-        const nameHtml = `
+      const nameHtml = `
           <div class="inst-row-name">${displayName || '—'}</div>
           <div class="inst-row-region">${region ? `Region: ${region}` : ''}</div>
         `;
-        if (this.tbody) {
-          if (locked) {
-            this.tbody.innerHTML = `
+      if (locked) {
+        return `
           <tr data-locked="true">
             <td>${nameHtml}</td>
             <td>${detailsHtml}</td>
@@ -153,8 +203,8 @@
               </span>
             </td>
           </tr>`;
-          } else {
-            this.tbody.innerHTML = `
+      }
+      return `
           <tr>
             <td>${nameHtml}</td>
             <td>${detailsHtml}</td>
@@ -163,12 +213,11 @@
               <button class="icon-btn inst-delete" type="button" title="Delete" aria-label="Delete"><span class="mask-icon icon-delete" aria-hidden="true"></span></button>
             </td>
           </tr>`;
-          }
-        }
-      } catch (_) {
-        if (this.table) this.table.style.display = 'none';
-        if (this.addBtn) this.addBtn.disabled = false;
-      }
+    }
+
+    _buildPlaceholderValue(instance, esc) {
+      const placeholderSource = instance?.prefix || instance?.name || '';
+      return placeholderSource ? `= ${esc(placeholderSource)}` : '= —';
     }
 
     _onTableClick(ev) {

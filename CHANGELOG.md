@@ -1,6 +1,13 @@
 # Changelog
 
-# Changelog
+## v1.0.7
+
+- Fix: Restored selection NAQ menu in the new Nexthink Infinity interface introduced in 2026.9.
+- Refactor: Refactored options management.
+
+## v1.0.6
+
+- Fix: Restore the cheatsheet toggle injection when the Nexthink Blue Bar navigation no longer exposes a menubar role.
 
 ## v1.0.5
 

@@ -408,6 +408,23 @@ function buildAnchoredMenuItem(container, label, href, onClick) {
     return outer;
 }
 
+function safeCopyClasses(target, source) {
+    if (!target || !source || !source.classList) return;
+    try { source.classList.forEach((cls) => { if (cls) target.classList.add(cls); }); } catch (_) {}
+}
+
+function applySeparatorLineStyles(line, nativeLine) {
+    if (!line || !nativeLine) return;
+    try {
+        const cs = window.getComputedStyle(nativeLine);
+        if (!cs) return;
+        line.style.height = cs.height || '';
+        line.style.margin = cs.margin || '';
+        line.style.backgroundColor = cs.backgroundColor || '';
+        line.style.opacity = cs.opacity || '';
+    } catch (_) {}
+}
+
 // Build a separator similar to native menus.
 function buildMenuSeparator(container) {
     try {
@@ -444,22 +461,14 @@ function buildMenuSeparator(container) {
 
         if (native) {
             // Copy outer classes if available
-            try { native.classList.forEach((cls) => { if (cls) sep.classList.add(cls); }); } catch (_) {}
+            safeCopyClasses(sep, native);
             // Try to clone the inner line look
-            let nativeLine = native.querySelector('div[class*="SeparatorLine"], div');
+            const nativeLine = native.querySelector('div[class*="SeparatorLine"], div');
             if (nativeLine) {
                 const line = document.createElement('div');
-                try { nativeLine.classList.forEach((cls) => { if (cls) line.classList.add(cls); }); } catch (_) {}
+                safeCopyClasses(line, nativeLine);
                 // Mirror computed style to be safe
-                try {
-                    const cs = window.getComputedStyle(nativeLine);
-                    if (cs) {
-                        line.style.height = cs.height || '';
-                        line.style.margin = cs.margin || '';
-                        line.style.backgroundColor = cs.backgroundColor || '';
-                        line.style.opacity = cs.opacity || '';
-                    }
-                } catch (_) {}
+                applySeparatorLineStyles(line, nativeLine);
                 sep.appendChild(line);
             } else {
                 ensureLine();
@@ -1110,7 +1119,11 @@ try {
 function detectPageContext() {
     try {
         const h2 = document.querySelector('header h2');
-        return (h2?.textContent || '').trim();
+        const context = (h2?.textContent || '').trim();
+        // Nexthink now renders the Investigations heading as a breadcrumb ("Investigations /").
+        // Keep the high-level context stable when the breadcrumb suffix changes.
+        if (/^Investigations(?:\s*\/|$)/.test(context)) return 'Investigations';
+        return context;
     } catch (_) { return ''; }
 }
 

@@ -307,38 +307,10 @@
       const overrideInstance = options.overrideInstance === true || mode === 'replace';
       const validateOnly = options.validateOnly === true;
 
-      if (!obj || typeof obj !== 'object') throw new Error('Invalid import object');
-      const rawArr = Array.isArray(obj.menu) ? obj.menu : null;
-      if (!Array.isArray(rawArr)) throw new Error('Invalid JSON format: expected { menu: [...] }');
-
-      // Sanitize menu
-      const menu = [];
-      for (const it of rawArr) {
-        if (!it || typeof it !== 'object') continue;
-        const clean = {
-          name: String(it.name || '').trim(),
-          url: String(it.url || '').trim(),
-        };
-        if (NqaConfigStore.isValidMenuItem(clean)) menu.push(clean);
-      }
-
-      // Sanitize instance
-      let instance = undefined; // means: not provided
-      if (Object.prototype.hasOwnProperty.call(obj, 'instance')) {
-        const provided = obj.instance;
-        if (provided === null) instance = null;
-        else if (NqaConfigStore.isValidInstance(provided)) instance = { name: provided.name.trim(), url: provided.url.trim() };
-        else instance = undefined; // ignore invalid instance
-      }
-
-      let exportPrefs = undefined;
-      if (Object.prototype.hasOwnProperty.call(obj, 'exportPrefs')) {
-        try {
-          exportPrefs = NqaConfigStore.sanitizeExportPrefs(obj.exportPrefs);
-        } catch (_) {
-          exportPrefs = undefined;
-        }
-      }
+      this._assertValidImportObject(obj);
+      const menu = this._sanitizeMenuEntries(obj.menu);
+      const instance = this._sanitizeInstance(obj);
+      const exportPrefs = this._sanitizeExportPrefs(obj);
 
       if (validateOnly) {
         return {
@@ -375,6 +347,48 @@
         appliedInstance: instance !== undefined,
         appliedExportPrefs: exportPrefs !== undefined,
       };
+    }
+
+    _assertValidImportObject(obj) {
+      if (!obj || typeof obj !== 'object') throw new Error('Invalid import object');
+      const rawArr = Array.isArray(obj.menu) ? obj.menu : null;
+      if (!Array.isArray(rawArr)) throw new Error('Invalid JSON format: expected { menu: [...] }');
+    }
+
+    _sanitizeMenuEntries(rawArr) {
+      const menu = [];
+      for (const it of rawArr) {
+        if (!it || typeof it !== 'object') continue;
+        const clean = {
+          name: String(it.name || '').trim(),
+          url: String(it.url || '').trim(),
+        };
+        if (NqaConfigStore.isValidMenuItem(clean)) menu.push(clean);
+      }
+      return menu;
+    }
+
+    _sanitizeInstance(obj) {
+      let instance = undefined; // means: not provided
+      if (Object.prototype.hasOwnProperty.call(obj, 'instance')) {
+        const provided = obj.instance;
+        if (provided === null) instance = null;
+        else if (NqaConfigStore.isValidInstance(provided)) {
+          instance = { name: provided.name.trim(), url: provided.url.trim() };
+        } else {
+          instance = undefined; // ignore invalid instance
+        }
+      }
+      return instance;
+    }
+
+    _sanitizeExportPrefs(obj) {
+      if (!Object.prototype.hasOwnProperty.call(obj, 'exportPrefs')) return undefined;
+      try {
+        return NqaConfigStore.sanitizeExportPrefs(obj.exportPrefs);
+      } catch (_) {
+        return undefined;
+      }
     }
 
     async getExportPrefs() {

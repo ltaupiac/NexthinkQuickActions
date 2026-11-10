@@ -2,25 +2,43 @@
 (function(global){
   'use strict';
 
+  function resolveElements(els){
+    const src = els || {};
+    return {
+      table: src.table || null,
+      tbody: src.tbody || null,
+      empty: src.empty || null,
+      addBtn: src.addBtn || null,
+      deleteModal: src.deleteModal || null,
+      deleteDialog: src.deleteDialog || null,
+      deleteSummary: src.deleteSummary || null,
+      deleteCancelBtn: src.deleteCancelBtn || null,
+      deleteConfirmBtn: src.deleteConfirmBtn || null,
+    };
+  }
+
+  function resolveHelpers(opts){
+    const noOp = (s)=>String(s||'');
+    return {
+      decodeForDisplay: (typeof opts.decodeForDisplay === 'function') ? opts.decodeForDisplay : noOp,
+      encodeTemplateUrlForStorage: (typeof opts.encodeTemplateUrlForStorage === 'function') ? opts.encodeTemplateUrlForStorage : noOp,
+      isValidNqaUrl: (typeof opts.isValidNqaUrl === 'function') ? opts.isValidNqaUrl : (()=>false),
+      URL_HELP: opts.URL_HELP || 'Example: http(s)://hostname/path{keyword} <br>{keyword} will be replaced by the captured value from the page',
+      URL_ERR_INVALID: opts.URL_ERR_INVALID || 'Invalid URL',
+    };
+  }
+
   class NqaMenuEntriesController {
     constructor(opts){
       this.opts = opts || {};
-      const els = this.opts.els || {};
-      this.table = els.table || null;
-      this.tbody = els.tbody || null;
-      this.empty = els.empty || null;
-      this.addBtn = els.addBtn || null;
-      this.deleteModal = els.deleteModal || null;
-      this.deleteDialog = els.deleteDialog || null;
-      this.deleteSummary = els.deleteSummary || null;
-      this.deleteCancelBtn = els.deleteCancelBtn || null;
-      this.deleteConfirmBtn = els.deleteConfirmBtn || null;
-
+      const els = resolveElements(this.opts.els);
+      Object.assign(this, els);
       this.store = this.opts.store || null;
       // helpers
-      this.decodeForDisplay = this.opts.decodeForDisplay || ((s)=>String(s||''));
-      this.encodeTemplateUrlForStorage = this.opts.encodeTemplateUrlForStorage || ((s)=>String(s||''));
-      this.isValidNqaUrl = this.opts.isValidNqaUrl || (()=>false);
+      const helpers = resolveHelpers(this.opts);
+      this.decodeForDisplay = helpers.decodeForDisplay;
+      this.encodeTemplateUrlForStorage = helpers.encodeTemplateUrlForStorage;
+      this.isValidNqaUrl = helpers.isValidNqaUrl;
 
       // state
       this.editingIndex = null; // -1 for new
@@ -30,8 +48,8 @@
       this.userEntriesAllowed = true;
 
       // UI texts
-      this.URL_HELP = this.opts.URL_HELP || 'Example: http(s)://hostname/path{keyword} <br>{keyword} will be replaced by the captured value from the page';
-      this.URL_ERR_INVALID = this.opts.URL_ERR_INVALID || 'Invalid URL';
+      this.URL_HELP = helpers.URL_HELP;
+      this.URL_ERR_INVALID = helpers.URL_ERR_INVALID;
     }
 
     attach(){
@@ -187,55 +205,83 @@
       }
       this._updateSaveDisabled();
     }
+    _getButtonAction(btn){
+      if (!btn || !btn.classList) return null;
+      const actions = ['edit', 'delete', 'move-up', 'move-down', 'cancel', 'save'];
+      for (const cls of actions){
+        if (btn.classList.contains(cls)) return cls;
+      }
+      return null;
+    }
+
+    _handleEditAction(idx, items){
+      this.editingIndex = idx;
+      this.draft = { ...(items[idx] || { name: '', url: '' }) };
+      this.draft.rawUrl = items[idx]?.url || null;
+      if (this.draft.url) this.draft.url = this.decodeForDisplay(this.draft.url);
+      this.touched = { name: false, url: false };
+      this.render(items);
+      setTimeout(() => { try { this.tbody.querySelector(`tr[data-index="${idx}"] input[name="name"]`).focus(); } catch(_){} }, 0);
+    }
+
+    _handleDeleteAction(idx, items, btn){
+      this.pendingDeleteIndex = idx;
+      if (this.deleteSummary) this.deleteSummary.textContent = `Delete "${(items[idx]?.name) || 'item'}" ?`;
+      this._positionDelete(btn);
+      if (this.deleteModal) this.deleteModal.hidden = false;
+    }
+
+    async _handleMoveAction(idx, items, delta){
+      if (this.editingIndex !== null) return;
+      const nextIdx = idx + delta;
+      if (nextIdx < 0 || nextIdx >= items.length) return;
+      const tmp = items[nextIdx]; items[nextIdx] = items[idx]; items[idx] = tmp;
+      await this.store.setMenu(items);
+      this.render(items);
+    }
+
+    _handleCancelAction(items){
+      this.editingIndex = null;
+      this.touched = { name:false, url:false };
+      this.render(items);
+    }
+
+    async _handleSaveAction(idx, items){
+      const nameV = (this.draft.name || '').trim();
+      const urlV = (this.draft.url || '').trim();
+      if (!nameV || !urlV || !this.isValidNqaUrl(urlV)) return;
+      let toStore = urlV;
+      try {
+        const rawLooksEncoded = !!(this.draft.rawUrl && /%[0-9A-Fa-f]{2}/.test(this.draft.rawUrl));
+        if (this.draft.rawUrl && rawLooksEncoded && this.decodeForDisplay(this.draft.rawUrl).trim() === urlV) toStore = this.draft.rawUrl.trim();
+        else toStore = this.encodeTemplateUrlForStorage(urlV);
+      } catch(_) { toStore = urlV; }
+      const obj = { name: nameV, url: toStore };
+      if (idx === -1) items.push(obj); else items[idx] = obj;
+      await this.store.setMenu(items);
+      this.editingIndex = null;
+      this.render(items);
+    }
+
     async _onTbodyClick(ev){
-      const btn = ev.target.closest('button.icon-btn'); if (!btn) return;
-      const tr = btn.closest('tr'); const idx = Number(tr?.getAttribute('data-index'));
+      const btn = ev.target.closest('button.icon-btn');
+      if (!btn) return;
+      const tr = btn.closest('tr');
+      const idx = Number(tr?.getAttribute('data-index'));
+      if (Number.isNaN(idx)) return;
+      const action = this._getButtonAction(btn);
+      if (!action) return;
       const items = await this.store.getMenu();
-      if (btn.classList.contains('edit')){
-        this.editingIndex = idx;
-        this.draft = { ...(items[idx] || { name: '', url: '' }) };
-        this.draft.rawUrl = items[idx]?.url || null;
-        if (this.draft.url) this.draft.url = this.decodeForDisplay(this.draft.url);
-        this.touched = { name: false, url: false };
-        this.render(items);
-        setTimeout(() => { try { this.tbody.querySelector(`tr[data-index="${idx}"] input[name="name"]`).focus(); } catch(_){} }, 0);
-        return;
-      }
-      if (btn.classList.contains('delete')){
-        this.pendingDeleteIndex = idx;
-        if (this.deleteSummary) this.deleteSummary.textContent = `Delete "${(items[idx]?.name) || 'item'}" ?`;
-        this._positionDelete(btn);
-        if (this.deleteModal) this.deleteModal.hidden = false;
-        return;
-      }
-      if (btn.classList.contains('move-up')){
-        if (this.editingIndex !== null || idx <= 0) return;
-        const tmp = items[idx - 1]; items[idx - 1] = items[idx]; items[idx] = tmp;
-        await this.store.setMenu(items); this.render(items); return;
-      }
-      if (btn.classList.contains('move-down')){
-        if (this.editingIndex !== null || idx >= items.length - 1) return;
-        const tmp = items[idx + 1]; items[idx + 1] = items[idx]; items[idx] = tmp;
-        await this.store.setMenu(items); this.render(items); return;
-      }
-      if (btn.classList.contains('cancel')){
-        this.editingIndex = null; this.touched = { name:false, url:false }; this.render(items); return;
-      }
-      if (btn.classList.contains('save')){
-        const nameV = (this.draft.name || '').trim();
-        const urlV = (this.draft.url || '').trim();
-        if (!nameV || !urlV || !this.isValidNqaUrl(urlV)) return;
-        let toStore = urlV;
-        try {
-          const rawLooksEncoded = !!(this.draft.rawUrl && /%[0-9A-Fa-f]{2}/.test(this.draft.rawUrl));
-          if (this.draft.rawUrl && rawLooksEncoded && this.decodeForDisplay(this.draft.rawUrl).trim() === urlV) toStore = this.draft.rawUrl.trim();
-          else toStore = this.encodeTemplateUrlForStorage(urlV);
-        } catch(_) { toStore = urlV; }
-        const obj = { name: nameV, url: toStore };
-        if (idx === -1) items.push(obj); else items[idx] = obj;
-        await this.store.setMenu(items);
-        this.editingIndex = null; this.render(items); return;
-      }
+      const handlers = {
+        'edit': () => this._handleEditAction(idx, items),
+        'delete': () => this._handleDeleteAction(idx, items, btn),
+        'move-up': () => this._handleMoveAction(idx, items, -1),
+        'move-down': () => this._handleMoveAction(idx, items, 1),
+        'cancel': () => this._handleCancelAction(items),
+        'save': () => this._handleSaveAction(idx, items),
+      };
+      const handler = handlers[action];
+      if (handler) await handler();
     }
 
     _updateSaveDisabled(){

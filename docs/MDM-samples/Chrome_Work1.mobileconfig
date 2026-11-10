@@ -45,7 +45,7 @@
                                     <key>ExtensionInstallForcelist</key>
                                     <array>
                                         <string>
-                                            jkgmoahabfeflkhecgaofocjaojnmlag;ttps://clients2.google.com/service/update2/crx</string>
+                                            jkgmoahabfeflkhecgaofocjaojnmlag;https://clients2.google.com/service/update2/crx</string>
                                     </array>
                                     <key>ExtensionSettings</key>
                                     <dict>
@@ -54,7 +54,7 @@
                                             <key>installation_mode</key>
                                             <string>force_installed</string>
                                             <key>update_url</key>
-                                            <string>ttps://clients2.google.com/service/update2/crx</string>
+                                            <string>https://clients2.google.com/service/update2/crx</string>
                                             <key>toolbar_state</key>
                                             <string>force_shown</string>
                                         </dict>
@@ -94,6 +94,13 @@
                                         <string>CORP</string>
                                         <key>url</key>
                                         <string>https://corp.eu.nexthink.cloud</string>
+                                    </dict>
+                                    <key>exportPrefs</key>
+                                    <dict>
+                                        <key>csvDelimiter</key>
+                                        <string>;</string>
+                                        <key>clipboardFormat</key>
+                                        <string>html</string>
                                     </dict>
                                     <key>menu</key>
                                     <array>

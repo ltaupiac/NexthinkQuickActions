@@ -192,9 +192,31 @@
     // Locate the navigation menubar that hosts the Nexthink quick actions toggle.
     function findMenubarList() {
         const uls = document.querySelectorAll("nav ul[role='menubar']");
-        if (!uls.length) return null;
-        return uls[uls.length - 1] || null;
+        if (uls.length) return uls[uls.length - 1] || null;
+        // Fallback: newer Blue Bar nav no longer exposes role="menubar".
+        try {
+            const nav = document.querySelector(
+                'nav[data-testid="blue-bar"], nav[aria-label="Main navigation panel"]'
+            );
+            if (!nav) return null;
+            const navUls = Array.from(nav.querySelectorAll("ul"));
+            let best = null;
+            let bestCount = -1;
+            for (const ul of navUls) {
+                const count = ul.querySelectorAll(
+                    "li[data-testid='item-container']"
+                ).length;
+                if (count > bestCount) {
+                    best = ul;
+                    bestCount = count;
+                }
+            }
+            return best;
+        } catch (_) {
+            return null;
+        }
     }
+
 
     // Clone the template menu item so we inherit Nexthink styling for the cheatsheet toggle.
     function cloneMenuItemForCheatsheet(templateItem) {

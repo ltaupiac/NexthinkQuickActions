@@ -98,6 +98,13 @@
                                         <key>url</key>
                                         <string>https://corp.eu.nexthink.cloud</string>
                                     </dict>
+                                    <key>exportPrefs</key>
+                                    <dict>
+                                        <key>csvDelimiter</key>
+                                        <string>;</string>
+                                        <key>clipboardFormat</key>
+                                        <string>html</string>
+                                    </dict>
                                     <!-- Menu entries -->
                                     <key>menu</key>
                                     <array>

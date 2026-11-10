@@ -6,3 +6,5 @@ photoshop
 debug
 reports
 node_modules
+.envrc
+mcp-shell.log

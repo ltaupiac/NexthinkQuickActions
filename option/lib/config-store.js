@@ -11,7 +11,12 @@
     Instance = { name: string, url: string }
 
   Export/Import JSON format:
-    { menu: Array<MenuItem>, instance: Instance|null, version: string }
+    {
+      menu: Array<MenuItem>,
+      instance: Instance|null,
+      exportPrefs?: { csvDelimiter: string, clipboardFormat: string },
+      version?: string
+    }
 
   Notes:
     - The class is exposed globally as `window.NqaConfigStore`.
@@ -300,7 +305,7 @@
       }
     }
 
-    // Import from an object that should look like: { menu: [...], instance?: {...}|null, version?: string }
+    // Import from an object that may include menu, instance, exportPrefs, and version.
     // options: { mode: 'add' | 'replace', overrideInstance?: boolean (default replace only), validateOnly?: boolean }
     async importFromObject(obj, options = {}) {
       const mode = (options.mode === 'add' || options.mode === 'replace') ? options.mode : 'replace';
@@ -395,22 +400,23 @@
       await this.ensureAndMigrateStorage();
       const managed = await getManagedAll();
       const pol = await this.getManagedPolicy(managed);
+      let managedPrefs = null;
       if (pol.mode !== 'seed') {
         const rawManaged = managed?.exportPrefs;
         if (rawManaged && typeof rawManaged === 'object') {
-          // Honor managed defaults when present so policies take precedence over user sync data
-          const prefs = NqaConfigStore.sanitizeExportPrefs(rawManaged);
-          return {
-            ...prefs,
-            __managed: true,
-            __locked: !!pol.lockManagedEntries,
-          };
+          managedPrefs = NqaConfigStore.sanitizeExportPrefs(rawManaged);
         }
       }
-      const def = { [NqaConfigStore.KEYS.EXPORT]: DEFAULT_EXPORT_PREFS };
-      const res = await promisifyGet(def);
-      const raw = res?.[NqaConfigStore.KEYS.EXPORT];
-      return NqaConfigStore.sanitizeExportPrefs(raw);
+
+      // User preferences (including imported ones) override managed defaults.
+      const key = NqaConfigStore.KEYS.EXPORT;
+      const res = await promisifyGet([key]);
+      if (res && Object.prototype.hasOwnProperty.call(res, key)) {
+        return NqaConfigStore.sanitizeExportPrefs(res[key]);
+      }
+
+      if (managedPrefs) return { ...managedPrefs, __managed: true, __locked: false };
+      return NqaConfigStore.sanitizeExportPrefs(DEFAULT_EXPORT_PREFS);
     }
 
     async setExportPrefs(prefs) {

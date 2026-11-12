@@ -8,7 +8,7 @@ Nexthink Quick Actions is a Chrome/Edge extension that augments the Nexthink web
 - **Cheat-sheet toggle** – adds a QuickActions icon to the Nexthink top menubar that reveals a panel listing all detected column placeholders, with one-click copy to help authors build URLs.
 - **Friendly configuration surface** – an options page to maintain the Nexthink instance URL, manage quick action rows, reorder entries, tune export preferences, and import/export JSON bundles.
 - **Investigation export helpers** – augments the bulk-selection toolbar with NQA-branded actions to copy selected rows (Markdown, ASCII, or HTML) or download a CSV using your preferred separator.
-- **Policy-driven deployment** – supports Chrome managed storage, including overlay vs seed modes, so administrators can pre-load and lock menus, instance settings, or export preferences. Sample payloads and deployment scripts are available in `docs/MDM-samples/`.
+- **Policy-driven deployment** – supports Chrome managed storage, including overlay vs seed modes, so administrators can pre-load and lock tenant settings and menu entries. In overlay mode, they can also provide default export preferences that users can override. Sample payloads and deployment scripts are available in `docs/MDM-samples/`.
 
 ## Configuration workflow
 ### Accessing the options page
@@ -22,14 +22,14 @@ Nexthink Quick Actions is a Chrome/Edge extension that augments the Nexthink web
 - The helper text explains the placeholder syntax. Validation ensures the template is `http(s)://` and contains at least one `{placeholder}` token. Wildcards (`*`) inside placeholders act as glob-like patterns matched against captured column keys.
 
 ### Export settings, import/export, and JSON format
-- Use the *Export settings* card to choose the CSV separator used during downloads and the clipboard format (`Markdown`, `ASCII table`, or `HTML table`) applied when copying selections from Investigations. When you pick a default clipboard format, the card now shows a *Quick toggles* hint that reminds you which modifier keys (`Alt` and `Shift`) will temporarily switch to the second and third formats during copy actions.
-- Use the toolbar buttons to export the current dataset to `NQA_Configuration.json` or import another JSON document. The modal lets you **Add** (append) or **Replace** the existing menu, and optionally override the instance when provided.
+- Use the *Export settings* card to choose the CSV separator used during downloads and the clipboard format (`HTML table`, `Markdown`, `ASCII table`, or `TSV`) applied when copying selections from Investigations. The *Quick toggles* hint shows which formats `Alt` and `Shift` select temporarily. Each copy action also has a format selector for a one-time override; TSV uses tab-separated text for spreadsheet pasting.
+- Use the toolbar buttons to export the current configuration to `NQA_Configuration.json` or import another JSON document. The modal lets you **Add** (append) or **Replace** the existing menu, and optionally override the instance when provided. Imported export preferences are restored with either choice when present; older files without `exportPrefs` leave the current preferences unchanged. User preferences and imported values take priority over administrator-provided export defaults.
 - The expected structure matches `debug/NQA_Configuration+wildcard.json`:
   ```json
   {
     "menu": [{ "name": "Open in ServiceNow", "url": "https://…{devices_name}…" }],
     "instance": { "name": "PROD", "url": "https://corp.eu.nexthink.cloud" },
-    "exportPrefs": { "csvDelimiter": ",", "clipboardFormat": "html" },
+    "exportPrefs": { "csvDelimiter": ",", "clipboardFormat": "html" }
   }
   ```
 
@@ -50,10 +50,10 @@ Nexthink Quick Actions is a Chrome/Edge extension that augments the Nexthink web
 - The submenu header now displays the Nexthink Spark icon between separators to clearly distinguish native actions from extension-provided entries.
 
 - When rows are selected in Investigations, the Nexthink selection toolbar is enhanced with the Spark icon followed by **Copy selection** and **Download CSV**.
-- The copy action respects the clipboard format defined in the options page; hold `Alt` or `Shift` while clicking to temporarily switch to the alternate formats shown in the options card. A small indicator appears next to the button to confirm which mode is active.
+- The copy action respects the clipboard format defined in the options page; hold `Alt` or `Shift` while clicking to temporarily switch to the alternate formats shown in the options card. Use the adjacent format selector to copy once in any of the four formats without changing the default. A small indicator appears next to the button when a modifier is active.
 - The CSV action always uses the configured delimiter.
 - Toast notifications confirm the number of exported rows and now mention the clipboard format when a modifier override is used. They also signal when the limit (default 200) truncates the selection.
-- When using the ASCII clipboard format, paste into a monospaced font (Courier, Consolas, Monaco, Menlo, etc.) to preserve the table grid. Choose the HTML table format when pasting into rich-text clients such as Outlook.
+- When using the ASCII clipboard format, paste into a monospaced font (Courier, Consolas, Monaco, Menlo, etc.) to preserve the table grid. TSV is suited to spreadsheet pasting; choose HTML when pasting into rich-text clients such as Outlook.
 
 ### Placeholder resolution
 - During injection, placeholders such as `{devices_name}` or wildcard forms like `{*full_name}` are replaced with the values exposed by `window.nqaPlaceHolder.rawValues`.

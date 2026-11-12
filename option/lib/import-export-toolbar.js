@@ -9,12 +9,13 @@
         this.opts = opts || {};
         this._initDomElements(this.opts.els || {});
 
-        // Store API (required): getMenu, setMenu, getInstance, setInstance
+        // Store API (required): getMenu, setMenu, getInstance, setInstance, getExportPrefs, setExportPrefs
         this.store = this.opts.store || null;
 
         // Optional callbacks
         this.onMenuChanged = typeof this.opts.onMenuChanged === 'function' ? this.opts.onMenuChanged : null;
         this.onInstanceChanged = typeof this.opts.onInstanceChanged === 'function' ? this.opts.onInstanceChanged : null;
+        this.onExportPrefsImported = typeof this.opts.onExportPrefsImported === 'function' ? this.opts.onExportPrefsImported : null;
 
         // Validators (can be overridden)
         this.isValidNqaUrl = this.opts.isValidNqaUrl || this._isValidNqaUrl;
@@ -23,6 +24,7 @@
         // Internal pending state
         this._pendingItems = null;
         this._pendingInstance = undefined;
+        this._pendingExportPrefs = undefined;
     }
 
     // Initializes DOM elements references from provided elements map
@@ -72,12 +74,17 @@
             if (!parsed) return this._resetFile(ev);
 
             const clean = this._validateMenuItems(parsed.menu);
-            if (!clean.length) {
+            this._pendingItems = clean;
+            this._pendingInstance = this._validateInstance(parsed.instance);
+            this._pendingExportPrefs = Object.prototype.hasOwnProperty.call(parsed, 'exportPrefs')
+                ? parsed.exportPrefs
+                : undefined;
+
+            if (!clean.length && this._pendingInstance === undefined && this._pendingExportPrefs === undefined) {
                 this._alert('No valid entries to import');
                 return this._resetFile(ev);
             }
 
-            this._pendingInstance = this._validateInstance(parsed.instance);
             await this._handleImport(clean);
         } catch (e) {
             this._alert('Import failed');
@@ -92,7 +99,7 @@
             const parsed = JSON.parse(text);
             const arr = Array.isArray(parsed?.menu) ? parsed.menu : null;
             if (!Array.isArray(arr)) {
-                this._alert('Invalid JSON format (expected {"menu": [...], "instance"?: {...}})');
+                this._alert('Invalid JSON format (expected {"menu": [...], "instance"?: {...}, "exportPrefs"?: {...}})');
                 return null;
             }
             return parsed;
@@ -127,10 +134,14 @@
         const existing = await this.store.getMenu();
         if (existing && existing.length) {
             this._pendingItems = clean;
-            this._showImportModal(`${clean.length} menu item(s) detected${(this._pendingInstance!==undefined)?' + instance':''}. Choose: Add or Replace.`);
+            const details = [`${clean.length} menu item(s) detected`];
+            if (this._pendingInstance !== undefined) details.push('instance');
+            if (this._pendingExportPrefs !== undefined) details.push('export preferences');
+            this._showImportModal(`${details.join(' + ')}. Choose: Add or Replace.`);
         } else {
             await this.store.setMenu(clean);
             await this._maybeApplyInstanceOnImport();
+            await this._maybeApplyExportPrefsOnImport();
             if (typeof this.onMenuChanged === 'function') try { this.onMenuChanged(); } catch (_) {}
         }
     }
@@ -143,6 +154,7 @@
         if (Array.isArray(this._pendingItems)) merged.push(...this._pendingItems);
         await this.store.setMenu(merged);
         await this._maybeApplyInstanceOnImport();
+        await this._maybeApplyExportPrefsOnImport();
         if (typeof this.onMenuChanged === 'function') try { this.onMenuChanged(); } catch (_) {}
       } catch (_) { this._alert('Import failed'); }
       finally { this._closeImportModal(true); }
@@ -154,6 +166,7 @@
         const items = Array.isArray(this._pendingItems) ? this._pendingItems : [];
         await this.store.setMenu(items);
         await this._maybeApplyInstanceOnImport();
+        await this._maybeApplyExportPrefsOnImport();
         if (typeof this.onMenuChanged === 'function') try { this.onMenuChanged(); } catch (_) {}
       } catch (_) { this._alert('Import failed'); }
       finally { this._closeImportModal(true); }
@@ -177,6 +190,16 @@
       } catch (_) { /* ignore */ }
     }
 
+    // Restore export preferences when present; user imports override managed defaults.
+    async _maybeApplyExportPrefsOnImport() {
+      if (this._pendingExportPrefs === undefined || !this.store?.setExportPrefs) return;
+
+      const savedPrefs = await this.store.setExportPrefs(this._pendingExportPrefs);
+      if (this.onExportPrefsImported) {
+        this.onExportPrefsImported(savedPrefs);
+      }
+    }
+
     // Shows the import modal with given summary text
     _showImportModal(summaryText) {
       try { if (this.importSummary) this.importSummary.textContent = summaryText || ''; } catch (_) {}
@@ -186,7 +209,11 @@
     // Closes the import modal and optionally resets pending state
     _closeImportModal(resetPending) {
       try { if (this.importModal) this.importModal.hidden = true; } catch (_) {}
-      if (resetPending) { this._pendingItems = null; this._pendingInstance = undefined; }
+      if (resetPending) {
+        this._pendingItems = null;
+        this._pendingInstance = undefined;
+        this._pendingExportPrefs = undefined;
+      }
     }
 
     // Resets the file input value to allow re-selection of the same file

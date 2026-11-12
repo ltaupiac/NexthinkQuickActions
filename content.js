@@ -1,19 +1,26 @@
 // Configuration
 const INJECTED_ATTR = "data-sn-injected-item";
+const INJECTION_PENDING_ATTR = "data-sn-injection-pending";
 const INVESTIGATION_COLUMN_SELECTOR = 'table[role="presentation"] th[rowspan="1"] div[class*="LinesEllipsis"]';
 const INVESTIGATION_TABLE_SELECTOR = 'table[role="presentation"]';
 const SELECTION_CHECKBOX_SELECTOR = "input[type='checkbox']";
 const SELECTION_MENU_ATTR = 'data-nqa-export-menu';
 const SELECTION_BUTTON_ATTR = 'data-nqa-export-action';
+const SELECTION_HOVER_ATTR = 'data-nqa-export-hover';
 const SELECTION_FALLBACK_ID = 'nqa-export-floating-bar';
 const SELECTION_ACTION_STYLE_ID = 'nqa-export-action-style';
+const SELECTION_VIEW_OVERLAY_ID = 'nqa-selected-row-view-overlay';
+const SELECTION_VIEW_STYLE_ID = 'nqa-selected-row-view-style';
 const SELECTION_ACTION_BAR_SELECTOR = 'div[data-insights="undefined_action-bar"]';
+const COPY_FORMATS = ['html', 'markdown', 'ascii', 'tsv'];
+let copyFormatPopoverId = 0;
 let currentSubmenuTrigger = null; // track open submenu trigger for toggle
 let cleanupFn = null; // cleanup for global listeners
+let selectionViewCleanup = null;
 const copyTooltipTargets = new Set(); // track copy buttons needing tooltip updates
 const modifierIndicatorMap = new Map(); // map copy buttons to modifier state indicators
 const modifierState = { alt: false, shift: false }; // track pressed modifier keys
-const CLIPBOARD_MODIFIER_SEQUENCE = ['html', 'markdown', 'ascii']; // preferred modifier sequence
+const CLIPBOARD_MODIFIER_SEQUENCE = ['html', 'markdown', 'ascii', 'tsv']; // preferred modifier sequence
 
 // Build tooltip text reflecting the configured clipboard format.
 function buildClipboardTooltipText() {
@@ -127,14 +134,16 @@ function buildOrderedFormatList(sequence, defaultFormat) {
     return ordered;
 }
 
-// Pick alternate formats for Alt and Shift keys from the ordered list.
+// Pick alternate formats for Alt and Shift from the ordered list.
 function pickModifierFormats(orderedFormats, defaultFormat) {
-    const alt = orderedFormats.find((fmt) => fmt !== defaultFormat) || null;
-    const shift = orderedFormats.find((fmt) => fmt !== defaultFormat && fmt !== alt) || alt || null;
-    return { alt, shift };
+    const alternatives = orderedFormats.filter((fmt) => fmt !== defaultFormat);
+    return {
+        alt: alternatives[0] || null,
+        shift: alternatives[1] || alternatives[0] || null,
+    };
 }
 
-// Resolve default, Alt and Shift formats together with display labels.
+// Resolve default, Alt, and Shift formats with display labels.
 function computeModifierFormats() {
     const api = window.NqaExport;
     if (!api) return null;
@@ -151,6 +160,7 @@ function computeModifierFormats() {
 function getActiveModifierState() {
     const mapping = computeModifierFormats();
     if (!mapping) return null;
+    if (modifierState.alt && modifierState.shift) return null;
     if (modifierState.alt && mapping.altFormat && mapping.altFormat !== mapping.defaultFormat) {
         return {
             key: 'Alt',
@@ -184,18 +194,18 @@ function refreshModifierIndicators() {
             return;
         }
         if (!entry || !entry.chip) return;
-    if (state) {
-        const label = state.label || state.format;
-        entry.chip.textContent = `\u00A0(${label})`;
-        entry.chip.hidden = false;
-        target.setAttribute('data-nqa-modifier-active', '1');
-        target.classList.add('nqa-modifier-active');
-    } else {
-        entry.chip.textContent = '';
-        entry.chip.hidden = true;
-        target.removeAttribute('data-nqa-modifier-active');
-        target.classList.remove('nqa-modifier-active');
-    }
+        if (state) {
+            const label = state.label || state.format;
+            entry.chip.textContent = `\u00A0(${label})`;
+            entry.chip.hidden = false;
+            target.setAttribute('data-nqa-modifier-active', '1');
+            target.classList.add('nqa-modifier-active');
+        } else {
+            entry.chip.textContent = '';
+            entry.chip.hidden = true;
+            target.removeAttribute('data-nqa-modifier-active');
+            target.classList.remove('nqa-modifier-active');
+        }
     });
     stale.forEach((target) => unregisterModifierIndicatorTarget(target));
 }
@@ -380,9 +390,19 @@ function buildAnchoredMenuItem(container, label, href, onClick) {
     a.setAttribute("role", "menuitem");
     a.setAttribute("tabindex", "-1");
     a.setAttribute("data-tabindex", "0");
-    a.setAttribute("rel", "noreferrer noopener");
-    a.setAttribute("target", "_blank");
-    a.href = href;
+    if (typeof onClick === 'function') {
+        a.style.cursor = 'pointer';
+        a.addEventListener('click', async (event) => {
+            try { event.preventDefault(); } catch (_) {}
+            try { event.stopPropagation(); } catch (_) {}
+            try { await onClick(event, a); }
+            finally { setTimeout(() => hideCustomSubmenu(), 0); }
+        });
+    } else {
+        a.setAttribute("rel", "noreferrer noopener");
+        a.setAttribute("target", "_blank");
+        a.href = href;
+    }
 
     // Copy classes from the reference item (text-only or icon+text)
     ref.classList.forEach((cls) => {
@@ -396,16 +416,160 @@ function buildAnchoredMenuItem(container, label, href, onClick) {
     span.textContent = label;
     a.appendChild(span);
 
-    if (onClick) {
-        a.addEventListener("click", (e) => {
-            // Let navigation occur; still avoid bubbling to keep menu behavior consistent
-            e.stopPropagation();
-        });
-    }
-
     contents.appendChild(a);
     outer.appendChild(contents);
     return outer;
+}
+
+function supportsCopyFormatAnchorPositioning() {
+    return !!window.CSS?.supports?.('position-area: block-end')
+        && !!window.CSS?.supports?.('position-try-fallbacks: flip-block');
+}
+
+function positionCopyFormatPopover(popover, trigger) {
+    if (supportsCopyFormatAnchorPositioning()) {
+        popover.style.removeProperty('left');
+        popover.style.removeProperty('top');
+        return;
+    }
+
+    const anchor = trigger.parentElement || trigger;
+    const anchorRect = anchor.getBoundingClientRect();
+    const popoverRect = popover.getBoundingClientRect();
+    const viewportWidth = document.documentElement.clientWidth || window.innerWidth;
+    const viewportHeight = document.documentElement.clientHeight || window.innerHeight;
+    const gap = 6;
+    const edge = 8;
+
+    let left = anchorRect.left;
+    if (left + popoverRect.width > viewportWidth - edge) {
+        left = anchorRect.right - popoverRect.width;
+    }
+    left = Math.max(edge, Math.min(left, viewportWidth - popoverRect.width - edge));
+
+    let top = anchorRect.bottom + gap;
+    if (top + popoverRect.height > viewportHeight - edge) {
+        top = anchorRect.top - popoverRect.height - gap;
+    }
+    top = Math.max(edge, Math.min(top, viewportHeight - popoverRect.height - edge));
+
+    popover.style.left = `${Math.round(left)}px`;
+    popover.style.top = `${Math.round(top)}px`;
+}
+
+// Add a one-shot copy-format picker beside a copy action.
+function createCopyFormatSelector(referenceTarget, onSelectFormat) {
+    ensureSelectionActionStyles();
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'nqa-copy-format-toggle';
+    toggle.textContent = '▾';
+    toggle.setAttribute('aria-label', 'Choose a format for this copy');
+    toggle.setAttribute('aria-expanded', 'false');
+    toggle.title = 'Choose a format for this copy';
+    if (referenceTarget?.style?.color) toggle.style.color = referenceTarget.style.color;
+
+    const id = `nqa-copy-format-popover-${++copyFormatPopoverId}`;
+    toggle.setAttribute('aria-controls', id);
+    toggle.setAttribute('popovertarget', id);
+
+    const popover = document.createElement('div');
+    popover.id = id;
+    popover.className = 'nqa-copy-format-popover';
+    popover.setAttribute('popover', 'auto');
+    popover.setAttribute('role', 'group');
+    popover.setAttribute('aria-label', 'Copy format options');
+    popover.setAttribute('data-theme', getSelectionViewTheme());
+    popover.style.visibility = 'hidden';
+
+    const heading = document.createElement('div');
+    heading.className = 'nqa-copy-format-heading';
+    heading.textContent = 'Copy as';
+    popover.appendChild(heading);
+
+    const defaultFormat = resolveDefaultClipboardFormat(window.NqaExport);
+    COPY_FORMATS.forEach((format) => {
+        const option = document.createElement('button');
+        option.type = 'button';
+        option.className = 'nqa-copy-format-option';
+        const formatLabel = describeClipboardFormatForUi(format) || format;
+        option.textContent = formatLabel;
+        if (format === defaultFormat) {
+            const defaultLabel = document.createElement('span');
+            defaultLabel.className = 'nqa-copy-format-default';
+            defaultLabel.textContent = 'Default';
+            defaultLabel.setAttribute('aria-hidden', 'true');
+            option.appendChild(defaultLabel);
+            option.setAttribute('aria-label', `${formatLabel} (default)`);
+        }
+        option.addEventListener('click', async (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            try { popover.hidePopover(); } catch (_) {}
+            try { toggle.focus({ preventScroll: true }); } catch (_) {}
+            if (typeof onSelectFormat === 'function') {
+                await onSelectFormat(format, event, toggle);
+            }
+        });
+        popover.appendChild(option);
+    });
+
+    let repositionFrame = 0;
+    const repositionIfNeeded = () => {
+        if (supportsCopyFormatAnchorPositioning() || repositionFrame) return;
+        repositionFrame = requestAnimationFrame(() => {
+            repositionFrame = 0;
+            if (!popover.matches(':popover-open')) return;
+            positionCopyFormatPopover(popover, toggle);
+        });
+    };
+    const onToggle = () => {
+        const open = popover.matches(':popover-open');
+        toggle.setAttribute('aria-expanded', String(open));
+        if (open) {
+            popover.setAttribute('data-theme', getSelectionViewTheme());
+            requestAnimationFrame(() => {
+                if (!popover.matches(':popover-open')) return;
+                positionCopyFormatPopover(popover, toggle);
+                popover.style.visibility = 'visible';
+            });
+            document.addEventListener('scroll', repositionIfNeeded, true);
+            window.addEventListener('resize', repositionIfNeeded);
+        } else if (popover.contains(document.activeElement)) {
+            document.removeEventListener('scroll', repositionIfNeeded, true);
+            window.removeEventListener('resize', repositionIfNeeded);
+            if (repositionFrame) cancelAnimationFrame(repositionFrame);
+            repositionFrame = 0;
+            popover.style.visibility = 'hidden';
+            try { toggle.focus({ preventScroll: true }); } catch (_) {}
+        } else {
+            document.removeEventListener('scroll', repositionIfNeeded, true);
+            window.removeEventListener('resize', repositionIfNeeded);
+            if (repositionFrame) cancelAnimationFrame(repositionFrame);
+            repositionFrame = 0;
+            popover.style.visibility = 'hidden';
+        }
+    };
+    popover.addEventListener('toggle', onToggle);
+
+    return { toggle, popover };
+}
+
+function buildCopyFormatControl(copyRoot, copyButton, onSelectFormat) {
+    const control = document.createElement('div');
+    control.className = 'nqa-copy-format-control';
+    control.setAttribute('role', 'group');
+    control.setAttribute('aria-label', 'Copy actions');
+    if (copyButton?.style?.color) control.style.color = copyButton.style.color;
+    [copyRoot, copyButton].filter(Boolean).forEach((element) => {
+        element.removeAttribute(SELECTION_HOVER_ATTR);
+        element.style.removeProperty('--nqa-selection-hover-background');
+    });
+    control.appendChild(copyRoot);
+
+    const selector = createCopyFormatSelector(copyButton, onSelectFormat);
+    control.append(selector.toggle, selector.popover);
+    return { root: control, toggle: selector.toggle, popover: selector.popover };
 }
 
 function safeCopyClasses(target, source) {
@@ -753,11 +917,26 @@ function showCustomSubmenu(triggerEl, items) {
     // Build items (anchors) similar to native using our anchored builder
     const refRoot = nativeInnerMenu || rootMenu || document;
     const container = document.createElement('div');
+    const copyTargets = [];
     items.forEach(it => {
-        let item = buildAnchoredMenuItem(refRoot, it.label, it.href, null);
+        const isAction = typeof it.onActivate === 'function';
+        const item = buildAnchoredMenuItem(
+            refRoot,
+            it.label,
+            it.href,
+            isAction ? it.onActivate : null
+        );
         if (item) {
             const anchor = item.querySelector('a[role="menuitem"]');
-            if (anchor) {
+            if (anchor && isAction) {
+                if (it.copy) {
+                    anchor.setAttribute(SELECTION_BUTTON_ATTR, '1');
+                    anchor.setAttribute('data-nqa-export-copy', '1');
+                    registerClipboardTooltipTarget(anchor);
+                    registerModifierIndicatorTarget(anchor);
+                    copyTargets.push(anchor);
+                }
+            } else if (anchor) {
                 // Close our custom submenu right after the new tab is opened
                 anchor.addEventListener('click', (e) => {
                     try { console.log('[NQA] submenu anchor click captured', { type: e.type }); } catch (_) {}
@@ -777,8 +956,28 @@ function showCustomSubmenu(triggerEl, items) {
                     // setTimeout(() => hideCustomSubmenu(), 0);
                 }, { capture: true });
             }
+            if (anchor && typeof it.onFormatSelect === 'function') {
+                item.classList.add('nqa-copy-format-submenu-row');
+                item.setAttribute('role', 'group');
+                item.setAttribute('aria-label', 'Copy selection actions');
+                item.style.display = 'flex';
+                item.style.alignItems = 'stretch';
+                item.style.color = anchor.style.color || getComputedStyle(anchor).color;
+                item.style.setProperty('--nqa-copy-format-hover-background', getSelectionHoverBackground(item.style.color));
+                const contents = anchor.parentElement;
+                if (contents) {
+                    contents.style.flex = '1 1 auto';
+                    contents.style.minWidth = '0';
+                }
+                anchor.style.flex = '1 1 auto';
+                anchor.style.minWidth = '0';
+                const selector = createCopyFormatSelector(anchor, async (format, event, toggle) => {
+                    await it.onFormatSelect(format, event, toggle);
+                });
+                item.append(selector.toggle, selector.popover);
+            }
+            container.appendChild(item);
         }
-        container.appendChild(item);
     });
     menu.appendChild(container);
     midWrap.appendChild(menu);
@@ -833,9 +1032,20 @@ function showCustomSubmenu(triggerEl, items) {
     const onDocClick = (e) => {
         if (!outerWrap.contains(e.target) && e.target !== triggerEl) hideCustomSubmenu();
     };
+    let escapeHandledByCopyPopover = false;
     const onKey = (e) => {
         const isEsc = e.key === 'Escape' || e.key === 'Esc' || e.code === 'Escape';
-        if (isEsc) hideCustomSubmenu();
+        if (!isEsc) return;
+        const openCopyPopover = outerWrap.querySelector('.nqa-copy-format-popover:popover-open');
+        if (openCopyPopover) {
+            if (e.type === 'keydown') escapeHandledByCopyPopover = true;
+            return;
+        }
+        if (e.type === 'keyup' && escapeHandledByCopyPopover) {
+            escapeHandledByCopyPopover = false;
+            return;
+        }
+        if (e.type === 'keydown') hideCustomSubmenu();
     };
     // If the native root menu gets detached/hidden, also close our submenu
     // Maybe not strictly necessary but safer to avoid floating menus
@@ -874,6 +1084,12 @@ function showCustomSubmenu(triggerEl, items) {
         try { mo.disconnect(); } catch (_) {}
         try { if (rafId != null) cancelAnimationFrame(rafId); } catch (_) {}
         cancelCloseTimer();
+        copyTargets.forEach((target) => {
+            unregisterModifierIndicatorTarget(target);
+            unregisterClipboardTooltipTarget(target);
+            target.removeAttribute(SELECTION_BUTTON_ATTR);
+            target.removeAttribute('data-nqa-export-copy');
+        });
     };
 }
 
@@ -1031,23 +1247,94 @@ function getSafeId(rootMenuEl) {
     return id;
 }
 
+function getInvestigationColumnDefinition(button) {
+    const header = button?.closest('th, [role="columnheader"]');
+    const api = window.NqaExport;
+    if (!header || typeof api?.getColumnDefinitions !== 'function') return null;
+
+    const definitions = api.getColumnDefinitions();
+    const ariaIndex = Number.parseInt(header.getAttribute('aria-colindex') || '', 10);
+    if (Number.isInteger(ariaIndex)) {
+        const byAriaIndex = definitions.find((definition) => definition.ariaIndex === ariaIndex);
+        if (byAriaIndex) return byAriaIndex;
+    }
+
+    const cellIndex = header.cellIndex;
+    return Number.isInteger(cellIndex)
+        ? definitions.find((definition) => definition.index === cellIndex) || null
+        : null;
+}
+
+function injectColumnSelectionActions(rootMenuEl, columnDefinition) {
+    const api = window.NqaExport;
+    if (!api || typeof api.hasSelection !== 'function' || !api.hasSelection()) return true;
+
+    const container = rootMenuEl.querySelector('[role="menu"]') || rootMenuEl;
+    const quickIcon = buildQuickActionsIconSvg();
+    const { outer, trigger } = buildSubmenuTrigger(container, 'Quick Actions', quickIcon);
+
+    outer.addEventListener('click', (event) => {
+        try { event.preventDefault(); } catch (_) {}
+        try { event.stopPropagation(); } catch (_) {}
+
+        if (!window.NqaExport?.hasSelection?.()) {
+            window.NqaExport?.showToast?.('No rows selected', { anchor: trigger });
+            return;
+        }
+
+        const selectionOptions = { columnIndex: columnDefinition.index };
+        showCustomSubmenu(trigger, [
+            {
+                label: 'Copy selection',
+                copy: true,
+                onActivate: (actionEvent) => handleSelectionCopy(actionEvent, selectionOptions),
+                onFormatSelect: async (format, actionEvent, toggle) => {
+                    const returnFocusTarget = currentSubmenuTrigger;
+                    await handleSelectionCopy(actionEvent, selectionOptions, null, format, toggle);
+                    hideCustomSubmenu();
+                    if (returnFocusTarget?.isConnected) {
+                        try { returnFocusTarget.focus({ preventScroll: true }); } catch (_) {}
+                    }
+                },
+            },
+            {
+                label: 'Download CSV',
+                onActivate: (actionEvent) => handleSelectionDownload(actionEvent, selectionOptions),
+            },
+        ]);
+    });
+
+    const separator = buildMenuSeparator(container);
+    if (separator) container.appendChild(separator);
+    container.appendChild(outer);
+    return true;
+}
+
 // Generic injection into a discovered native actions menu (Device View, etc.)
 function tryInjectIntoRootMenu(rootMenuEl) {
     if (!rootMenuEl) return false;
     try {
         // Prevent duplicate injections within this menu
-        if (rootMenuEl.querySelector(`[${INJECTED_ATTR}]`)) return true;
-        // Resolve controlling kebab button and prime the placeholder so columnName is available
+        if (rootMenuEl.querySelector(`[${INJECTED_ATTR}]`) || rootMenuEl.hasAttribute(INJECTION_PENDING_ATTR)) return true;
+        // Resolve the controlling kebab button; native submenus use menuitems instead.
         const safeId = getSafeId(rootMenuEl);
         const btn = safeId ? document.querySelector(`button[aria-controls="${safeId}"]`) : null;
-        // Only inject on root action menus controlled by a row kebab button.
-        // Native submenus are controlled by menuitems (not buttons), so skip them.
         if (!btn) return true;
+
+        const pageContext = detectPageContext();
+        if (pageContext === 'Investigations') {
+            const cell = btn.closest('td, [role="gridcell"], [role="cell"]');
+            if (!cell) {
+                const columnDefinition = getInvestigationColumnDefinition(btn);
+                if (!columnDefinition) return true;
+                return injectColumnSelectionActions(rootMenuEl, columnDefinition);
+            }
+        }
 
         // On Device View multiple action menus exist (timeline, cards, etc.) but we only
         // want the two kebabs located in the header (device/user actions).
         try {
-            if (detectPageContext() === 'Device View') {
+            if (pageContext === 'Device View') {
                 const header = btn.closest('header[aria-label="Support header"]');
                 if (!header) {
                     return true; // skip non-header menus inside Device View
@@ -1056,32 +1343,41 @@ function tryInjectIntoRootMenu(rootMenuEl) {
         } catch (_) {
             // If context detection fails we fall back to previous behaviour.
         }
+        // The configuration lookup below is asynchronous. Lock this menu until it
+        // resolves so successive DOM mutations cannot queue duplicate insertions.
+        rootMenuEl.setAttribute(INJECTION_PENDING_ATTR, '1');
         try { if (btn) initNqaPlaceholder(btn); } catch (_) {}
 
         // Filter menu asynchronously; only inject if there are eligible items
         getMenuFilteredByCurrentColumn((menus) => {
-            if (!menus || !menus.length) return;
+            try {
+                if (!rootMenuEl.isConnected || !menus || !menus.length) return;
+                // A previous callback may have completed while this lookup was pending.
+                if (rootMenuEl.querySelector(`[${INJECTED_ATTR}]`)) return;
 
-            // Container used to append our entry
-            const container = rootMenuEl.querySelector('[role="menu"]') || rootMenuEl;
+                // Container used to append our entry
+                const container = rootMenuEl.querySelector('[role="menu"]') || rootMenuEl;
 
-            // Build our submenu trigger (icon from a dedicated builder)
-            const quickIconEl = buildQuickActionsIconSvg();
-            const { outer, trigger } = buildSubmenuTrigger(container, 'Quick Actions', quickIconEl);
+                // Build our submenu trigger (icon from a dedicated builder)
+                const quickIconEl = buildQuickActionsIconSvg();
+                const { outer, trigger } = buildSubmenuTrigger(container, 'Quick Actions', quickIconEl);
 
-            outer.addEventListener('click', (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                // Refresh placeholder for the current row just before rendering submenu
-                try { if (btn) initNqaPlaceholder(btn); } catch (_) {}
-                buildActionItemsForDevice((items) => {
-                    try { showCustomSubmenu(trigger, items); } catch (_) {}
+                outer.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    // Refresh placeholder for the current row just before rendering submenu
+                    try { if (btn) initNqaPlaceholder(btn); } catch (_) {}
+                    buildActionItemsForDevice((items) => {
+                        try { showCustomSubmenu(trigger, items); } catch (_) {}
+                    });
                 });
-            });
 
-            const sep = buildMenuSeparator(container);
-            if (sep) container.appendChild(sep);
-            container.appendChild(outer);
+                const sep = buildMenuSeparator(container);
+                if (sep) container.appendChild(sep);
+                container.appendChild(outer);
+            } finally {
+                rootMenuEl.removeAttribute(INJECTION_PENDING_ATTR);
+            }
         });
         /*
         bus = getNqaEventBus();
@@ -1091,7 +1387,10 @@ function tryInjectIntoRootMenu(rootMenuEl) {
         // */
 
         return true;
-    } catch (_) { return false; }
+    } catch (_) {
+        try { rootMenuEl.removeAttribute(INJECTION_PENDING_ATTR); } catch (_) {}
+        return false;
+    }
 }
 
 // Generic observer: watch for native actions menus being attached to the DOM (Device View, etc.)
@@ -1136,6 +1435,16 @@ function getTableName() {
         // Expect format like "1,20k Devices" or "567 Users"
         const match = title.match(/^[\d.,\s]*[kMGTPE]?[\s]+(\w+)/i);
         return match ? match[1] : '';
+    } catch (_) { return ''; }
+}
+
+// Read the result table label shown above the investigation grid.
+function getInvestigationResultTableName() {
+    try {
+        const h3 = document.querySelector('main h3');
+        const heading = (h3?.title || h3?.textContent || '').replace(/\s+/g, ' ').trim();
+        const match = heading.match(/^[\d.,]+\s*[kMGTPE]?\s+([^\s]+)/i) || heading.match(/^([^\s]+)/);
+        return match?.[1] || '';
     } catch (_) { return ''; }
 }
 
@@ -1359,22 +1668,69 @@ function ensureSelectionActionStyles() {
         #${SELECTION_FALLBACK_ID}.show{display:flex}
         #${SELECTION_FALLBACK_ID} .nqa-export-action-btn{border-color:rgba(255,255,255,0.2)}
         @media (prefers-color-scheme: dark){#${SELECTION_FALLBACK_ID}{background:rgba(17,17,17,0.92);box-shadow:0 8px 24px rgba(0,0,0,0.4),0 2px 4px rgba(0,0,0,0.32)}#${SELECTION_FALLBACK_ID} .nqa-export-action-btn{border-color:rgba(255,255,255,0.3)}}
-        html[data-theme="light"] ${SELECTION_ACTION_BAR_SELECTOR} .nqa-export-action-btn{background:#121212;color:#f6f7fb;border:0;text-align:left;width:100%;display:block}
-        html[data-theme="light"] ${SELECTION_ACTION_BAR_SELECTOR} .nqa-export-action-btn:hover{background:#1f1f1f}
-        html[data-theme="dark"] ${SELECTION_ACTION_BAR_SELECTOR} .nqa-export-action-btn{background:#ffffff;color:#1f1f1f;border:0;text-align:left;width:100%;display:block}
-        html[data-theme="dark"] ${SELECTION_ACTION_BAR_SELECTOR} .nqa-export-action-btn:hover{background:#f4f4f4}
+        html[data-theme*="light"] [${SELECTION_MENU_ATTR}] .nqa-export-action-btn{background:#121212;color:#f6f7fb;border:0;text-align:left;white-space:nowrap}
+        html[data-theme*="light"] [${SELECTION_MENU_ATTR}] .nqa-export-action-btn:hover{background:#1f1f1f}
+        html[data-theme*="dark"] [${SELECTION_MENU_ATTR}] .nqa-export-action-btn,html[data-theme*="dark"] [${SELECTION_MENU_ATTR}] [${SELECTION_HOVER_ATTR}]{background:#f3f3f3;color:#1f1f1f;border:0;text-align:left;white-space:nowrap}
+        html[data-theme*="dark"] [${SELECTION_MENU_ATTR}] .nqa-export-action-btn:hover{background:#c9c9c9}
+        html[data-theme*="dark"] [${SELECTION_MENU_ATTR}] [${SELECTION_HOVER_ATTR}]:hover{background-color:#c9c9c9!important}
         [${SELECTION_BUTTON_ATTR}]{position:relative;overflow:visible!important}
+        [${SELECTION_HOVER_ATTR}]{transition:background-color .12s ease}
+        [${SELECTION_HOVER_ATTR}]:hover{background-color:var(--nqa-selection-hover-background)!important}
         [${SELECTION_BUTTON_ATTR}][data-nqa-modifier-active="1"]{box-shadow:0 0 0 2px rgba(53,120,229,0.45)}
         @media (prefers-color-scheme: dark){[${SELECTION_BUTTON_ATTR}][data-nqa-modifier-active="1"]{box-shadow:0 0 0 2px rgba(53,120,229,0.65)}}
         .nqa-export-modifier-chip{position:absolute;z-index:2147483645;left:50%;top:calc(100% + 6px);transform:translateX(-50%);display:inline-flex;align-items:center;gap:6px;padding:3px 8px;border-radius:999px;font-size:12px;line-height:1.2;background:rgba(53,120,229,0.12);color:#1f1f1f;box-shadow:0 6px 14px rgba(0,0,0,0.18)}
+        #nca-custom-submenu .nqa-export-modifier-chip, ${SELECTION_ACTION_BAR_SELECTOR} .nqa-export-modifier-chip{position:static!important;left:auto!important;top:auto!important;transform:none!important;margin-left:8px}
         .nqa-export-modifier-chip[hidden]{display:none!important}
         @media (prefers-color-scheme: dark){.nqa-export-modifier-chip{background:rgba(53,120,229,0.28);color:#f2f4f8;box-shadow:0 6px 18px rgba(0,0,0,0.45)}}
+        .nqa-copy-format-control{display:inline-flex!important;align-items:stretch;vertical-align:middle;min-width:0;border-radius:6px;background:var(--nqa-copy-format-control-background,transparent);--nqa-copy-format-control-background:transparent;--nqa-copy-format-hover-background:#f4f4f6}
+        .nqa-copy-format-control>:first-child{flex:1 1 auto;min-width:0;padding-inline-end:6px!important;border-right:0!important;border-top-right-radius:0!important;border-bottom-right-radius:0!important;background:transparent!important}
+        .nqa-copy-format-control>:first-child a[role="menuitem"]{background:transparent!important}
+        .nqa-copy-format-control>.nqa-copy-format-toggle{background:transparent!important}
+        .nqa-copy-format-control:is(:hover,:has(>.nqa-copy-format-popover:popover-open)){background:var(--nqa-copy-format-hover-background)!important}
+        .nqa-copy-format-submenu-row{--nqa-copy-format-hover-background:rgba(0,0,0,.06)}
+        .nqa-copy-format-submenu-row:is(:hover,:has(>.nqa-copy-format-popover:popover-open)){background:var(--nqa-copy-format-hover-background)!important}
+        #nca-custom-submenu .nqa-copy-format-submenu-row a[role="menuitem"],#nca-custom-submenu .nqa-copy-format-submenu-row>.nqa-copy-format-toggle{background:transparent!important}
+        .nqa-copy-format-toggle{appearance:none!important;display:inline-flex!important;flex:0 0 28px;align-items:center;justify-content:center;min-width:28px!important;margin:0!important;padding:0 4px!important;border:0!important;border-left:0!important;border-right:1px solid rgba(127,127,127,.35)!important;border-radius:0 6px 6px 0!important;color:inherit!important;font:inherit!important;line-height:1!important;opacity:.82;cursor:pointer}
+        .nqa-copy-format-control:hover>.nqa-copy-format-toggle,.nqa-copy-format-control:has(>.nqa-copy-format-popover:popover-open)>.nqa-copy-format-toggle{opacity:1}
+        .nqa-copy-format-toggle:hover{opacity:1}
+        .nqa-copy-format-toggle:focus-visible{outline:2px solid #3578e5!important;outline-offset:1px}
+        @media (prefers-color-scheme: dark){.nqa-copy-format-control{--nqa-copy-format-control-background:#2a2d33;--nqa-copy-format-hover-background:#34373f}}
+        html[data-theme*="light"] [${SELECTION_MENU_ATTR}] .nqa-copy-format-control{--nqa-copy-format-control-background:#121212;--nqa-copy-format-hover-background:#1f1f1f}
+        html[data-theme*="dark"] [${SELECTION_MENU_ATTR}] .nqa-copy-format-control{--nqa-copy-format-control-background:#f3f3f3;--nqa-copy-format-hover-background:#c9c9c9}
+        html[data-theme*="light"] [${SELECTION_MENU_ATTR}] .nqa-copy-format-control>:first-child,html[data-theme*="light"] [${SELECTION_MENU_ATTR}] .nqa-copy-format-control>:first-child a[role="menuitem"],html[data-theme*="light"] [${SELECTION_MENU_ATTR}] .nqa-copy-format-control>.nqa-copy-format-toggle,html[data-theme*="dark"] [${SELECTION_MENU_ATTR}] .nqa-copy-format-control>:first-child,html[data-theme*="dark"] [${SELECTION_MENU_ATTR}] .nqa-copy-format-control>:first-child a[role="menuitem"],html[data-theme*="dark"] [${SELECTION_MENU_ATTR}] .nqa-copy-format-control>.nqa-copy-format-toggle{background:transparent!important}
+        .nqa-copy-format-popover{position:fixed;min-inline-size:min(220px,calc(100vw - 16px));max-inline-size:calc(100vw - 16px);max-block-size:calc(100vh - 16px);width:max-content;overflow:auto;padding:6px;border:1px solid transparent;border-radius:11px;box-shadow:0 10px 28px rgba(0,0,0,.25);z-index:2147483647;box-sizing:border-box}
+        .nqa-copy-format-popover:popover-open{display:flex;flex-direction:column;gap:2px}
+        .nqa-copy-format-popover[data-theme="light"]{background:#202124;color:#f7f8fa;border-color:#383a3d}
+        .nqa-copy-format-popover[data-theme="dark"]{background:#f7f8fa;color:#252a30;border-color:#d9dde2}
+        .nqa-copy-format-heading{padding:7px 10px 0;font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;opacity:.75}
+        .nqa-copy-format-option{appearance:none!important;display:flex!important;align-items:center;justify-content:space-between;gap:20px;width:100%;min-height:38px;margin:0!important;padding:7px 10px!important;border:0!important;border-radius:6px!important;background:transparent!important;color:inherit!important;font:inherit!important;font-size:14px!important;line-height:1.35!important;text-align:left;white-space:nowrap;cursor:pointer}
+        .nqa-copy-format-popover[data-theme="light"] .nqa-copy-format-option:hover,.nqa-copy-format-popover[data-theme="light"] .nqa-copy-format-option:focus-visible{background:#393d42!important}
+        .nqa-copy-format-popover[data-theme="dark"] .nqa-copy-format-option:hover,.nqa-copy-format-popover[data-theme="dark"] .nqa-copy-format-option:focus-visible{background:#e5eaf0!important}
+        .nqa-copy-format-default{flex:none;padding:3px 7px;border-radius:999px;background:rgba(127,127,127,.2);font-size:10px;font-weight:700;letter-spacing:.04em;text-transform:uppercase}
+        @supports (position-area: block-end) and (position-try-fallbacks: flip-block){.nqa-copy-format-popover{inset:auto;margin:0;position-area:block-end span-inline-end;position-try-fallbacks:flip-block,flip-inline,flip-block flip-inline}}
+        @supports not ((position-area: block-end) and (position-try-fallbacks: flip-block)){.nqa-copy-format-popover{inset:auto;margin:0}}
+        #${SELECTION_FALLBACK_ID} .nqa-copy-format-control{color:#1f1f1f;--nqa-copy-format-control-background:#fff;--nqa-copy-format-hover-background:#f4f4f6}
+        @media (prefers-color-scheme: dark){#${SELECTION_FALLBACK_ID} .nqa-copy-format-control{color:#f2f4f8;--nqa-copy-format-control-background:#2a2d33;--nqa-copy-format-hover-background:#34373f}}
         `;
     document.head.appendChild(style);
 }
 
+function getSelectionHoverBackground(textColor) {
+    const channels = textColor.match(/[\d.]+/g)?.slice(0, 3).map(Number);
+    if (!channels || channels.length < 3) return 'rgba(0,0,0,0.06)';
+
+    const luminance = (channels[0] * 299 + channels[1] * 587 + channels[2] * 114) / 1000;
+    return luminance > 160 ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.06)';
+}
+
+function markSelectionHoverTarget(element, textColor) {
+    element.setAttribute(SELECTION_HOVER_ATTR, '1');
+    element.style.setProperty('--nqa-selection-hover-background', getSelectionHoverBackground(textColor));
+}
+
 // Clone a native menu item (button or link) to create a consistent export action.
 function buildSelectionMenuEntry(container, label, onActivate) {
+    const actionColor = getComputedStyle(container).color;
     const templateButton = container.querySelector(`button:not([${SELECTION_BUTTON_ATTR}])`);
     if (templateButton) {
         const clone = templateButton.cloneNode(true);
@@ -1384,6 +1740,11 @@ function buildSelectionMenuEntry(container, label, onActivate) {
         try { clone.removeAttribute('data-insights'); } catch (_) {}
         try { clone.removeAttribute('data-testid'); } catch (_) {}
         try { clone.removeAttribute('style'); } catch (_) {}
+        try { clone.removeAttribute('disabled'); } catch (_) {}
+        try { clone.removeAttribute('aria-disabled'); } catch (_) {}
+        clone.style.color = actionColor;
+        clone.style.cursor = 'pointer';
+        markSelectionHoverTarget(clone, actionColor);
         clone.setAttribute(SELECTION_BUTTON_ATTR, '1');
         clone.setAttribute('type', 'button');
         clone.setAttribute('role', 'menuitem');
@@ -1404,11 +1765,16 @@ function buildSelectionMenuEntry(container, label, onActivate) {
         const outer = templateLink.closest('[class*="StyledActionMenuItemContainer"]');
         const wrapper = outer ? outer.cloneNode(true) : templateLink.cloneNode(true);
         const clickable = outer ? wrapper.querySelector('a[role="menuitem"]') : wrapper;
+        markSelectionHoverTarget(wrapper, actionColor);
         if (clickable) {
             try { clickable.removeAttribute('href'); } catch (_) {}
             try { clickable.removeAttribute('target'); } catch (_) {}
             try { clickable.removeAttribute('rel'); } catch (_) {}
             try { clickable.removeAttribute('id'); } catch (_) {}
+            try { clickable.removeAttribute('disabled'); } catch (_) {}
+            try { clickable.removeAttribute('aria-disabled'); } catch (_) {}
+            clickable.style.color = actionColor;
+            clickable.style.cursor = 'pointer';
             clickable.setAttribute(SELECTION_BUTTON_ATTR, '1');
             clickable.setAttribute('role', 'menuitem');
             const span = clickable.querySelector('span');
@@ -1483,7 +1849,7 @@ function buildSelectionFeedback(action, payload, formatLabel) {
     const rows = payload?.rows;
     if (!Array.isArray(rows) || rows.length === 0) return `No rows ${verb.toLowerCase()}.`;
 
-    const count = rows.length;
+    const count = Number.isFinite(payload?.feedbackCount) ? payload.feedbackCount : rows.length;
     const noun = count === 1 ? 'row' : 'rows';
     const total = typeof payload?.totalSelected === 'number' ? payload.totalSelected : count;
     let message = '';
@@ -1556,6 +1922,7 @@ function teardownSelectionMenu() {
 // Inject separators, Spark icon, and export buttons into the native selection menu.
 function injectSelectionMenu(menu) {
     if (!menu) return false;
+    ensureSelectionActionStyles();
     if (menu === selectionMenuRef) {
         if (menu.querySelector(`[${SELECTION_BUTTON_ATTR}]`)) return true;
     } else {
@@ -1564,7 +1931,12 @@ function injectSelectionMenu(menu) {
 
     const copyEntry = buildSelectionMenuEntry(menu, 'Copy selection', handleSelectionCopy);
     const csvEntry = buildSelectionMenuEntry(menu, 'Download\u00a0CSV', handleSelectionDownload);
+    const viewEntry = buildSelectionMenuEntry(menu, 'View', handleSelectionView);
     const copyTarget = copyEntry ? (copyEntry.button || copyEntry.root) : null;
+    const copyControl = copyEntry && copyTarget
+        ? buildCopyFormatControl(copyEntry.root, copyTarget, (format, event) =>
+            handleSelectionCopy(event, null, null, format, copyTarget))
+        : null;
     const frag = document.createDocumentFragment();
 
     const separatorBefore = buildMenuSeparator(menu) || document.createElement('div');
@@ -1578,10 +1950,13 @@ function injectSelectionMenu(menu) {
     if (!separatorAfter.hasAttribute?.(INJECTED_ATTR)) separatorAfter.setAttribute?.(INJECTED_ATTR, '1');
     frag.appendChild(separatorAfter);
 
-    if (copyEntry?.root) {
+    if (copyControl?.root) {
+        frag.appendChild(copyControl.root);
+    } else if (copyEntry?.root) {
         frag.appendChild(copyEntry.root);
     }
     if (csvEntry?.root) frag.appendChild(csvEntry.root);
+    if (viewEntry?.root) frag.appendChild(viewEntry.root);
 
     try { menu.appendChild(frag); }
     catch (_) { return false; }
@@ -1602,9 +1977,13 @@ function injectSelectionMenu(menu) {
             unregisterModifierIndicatorTarget(copyTarget);
             unregisterClipboardTooltipTarget(copyTarget);
         }
-        if (copyEntry?.root) { try { copyEntry.root.remove(); } catch (_) {} }
+        if (copyControl?.root) { try { copyControl.root.remove(); } catch (_) {} }
+        else if (copyEntry?.root) { try { copyEntry.root.remove(); } catch (_) {} }
         if (csvEntry?.root) {
             try { csvEntry.root.remove(); } catch (_) {}
+        }
+        if (viewEntry?.root) {
+            try { viewEntry.root.remove(); } catch (_) {}
         }
     };
     return true;
@@ -1626,6 +2005,8 @@ function ensureFallbackBar() {
         copyBtn.setAttribute(SELECTION_BUTTON_ATTR, '1');
         copyBtn.setAttribute('data-nqa-export-copy', '1');
         copyBtn.addEventListener('click', handleSelectionCopy);
+        const copyControl = buildCopyFormatControl(copyBtn, copyBtn, (format, event) =>
+            handleSelectionCopy(event, null, null, format, copyBtn));
 
         const csvBtn = document.createElement('button');
         csvBtn.type = 'button';
@@ -1634,8 +2015,17 @@ function ensureFallbackBar() {
         csvBtn.setAttribute(SELECTION_BUTTON_ATTR, '1');
         csvBtn.addEventListener('click', handleSelectionDownload);
 
-        bar.appendChild(copyBtn);
+        const viewBtn = document.createElement('button');
+        viewBtn.type = 'button';
+        viewBtn.className = 'nqa-export-action-btn';
+        viewBtn.textContent = 'View';
+        viewBtn.setAttribute(SELECTION_BUTTON_ATTR, '1');
+        viewBtn.setAttribute('aria-label', 'View selected rows');
+        viewBtn.addEventListener('click', handleSelectionView);
+
+        bar.appendChild(copyControl.root);
         bar.appendChild(csvBtn);
+        bar.appendChild(viewBtn);
         document.body.appendChild(bar);
         registerClipboardTooltipTarget(copyBtn);
         registerModifierIndicatorTarget(copyBtn);
@@ -1654,8 +2044,342 @@ function hideFallbackBar() {
     }
 }
 
+function getSelectionViewTheme() {
+    const theme = String(document.documentElement.getAttribute('data-theme') || '').toLowerCase();
+    if (theme.includes('dark')) return 'dark';
+    if (theme.includes('light')) return 'light';
+
+    try {
+        const background = getComputedStyle(document.body).backgroundColor;
+        const channels = background.match(/[\d.]+/g)?.map(Number);
+        if (channels?.length >= 3 && (channels.length < 4 || channels[3] > 0)) {
+            const luminance = (channels[0] * 299 + channels[1] * 587 + channels[2] * 114) / 1000;
+            return luminance < 128 ? 'dark' : 'light';
+        }
+    } catch (_) { /* use the browser preference below */ }
+
+    return window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+}
+
+// Use the largest visible table text size as the lower bound for the form font.
+function getSelectionViewBaseFontSize() {
+    const table = document.querySelector(INVESTIGATION_TABLE_SELECTOR);
+    if (!table) return 14;
+
+    let baseFontSize = 14;
+    const textCells = table.querySelectorAll('th[rowspan="1"], td, [role="columnheader"], [role="gridcell"]');
+    const textElements = new Set();
+    textCells.forEach((cell) => {
+        textElements.add(cell);
+        cell.querySelectorAll('*').forEach((element) => {
+            const hasOwnText = Array.from(element.childNodes).some((node) =>
+                node.nodeType === Node.TEXT_NODE && (node.textContent || '').trim()
+            );
+            if (hasOwnText) textElements.add(element);
+        });
+    });
+    textElements.forEach((cell) => {
+        try {
+            const rect = cell.getBoundingClientRect();
+            if (!rect.width || !rect.height) return;
+            const fontSize = parseFloat(getComputedStyle(cell).fontSize);
+            if (Number.isFinite(fontSize)) baseFontSize = Math.max(baseFontSize, fontSize);
+        } catch (_) { /* ignore unavailable cells */ }
+    });
+    return baseFontSize;
+}
+
+// Grow the form text for short forms; keep the source-table size as a hard minimum.
+function getSelectionViewFontSize(fieldCount) {
+    const baseFontSize = getSelectionViewBaseFontSize();
+    const maxFontSize = Math.min(22, baseFontSize + 4);
+    const viewportHeight = window.innerHeight || 800;
+    const availableBodyHeight = Math.min(560, Math.max(180, viewportHeight * 0.62));
+    const estimatedFontSize = availableBodyHeight / Math.max(1, fieldCount) / 2.7;
+    const fontSize = Math.max(baseFontSize, Math.min(maxFontSize, estimatedFontSize));
+    return Math.round(fontSize * 10) / 10;
+}
+
+function ensureSelectionViewStyles() {
+    if (document.getElementById(SELECTION_VIEW_STYLE_ID)) return;
+    const style = document.createElement('style');
+    style.id = SELECTION_VIEW_STYLE_ID;
+    style.textContent = `
+        #${SELECTION_VIEW_OVERLAY_ID}{position:fixed;inset:0;z-index:2147483647;display:flex;align-items:center;justify-content:center;box-sizing:border-box;padding:16px;background:rgba(9,17,28,.44);font-family:inherit;color:#202a36}
+        #${SELECTION_VIEW_OVERLAY_ID} *{box-sizing:border-box}
+        #${SELECTION_VIEW_OVERLAY_ID} .nqa-selection-view-dialog{display:flex;flex-direction:column;width:min(760px,100%);max-height:calc(100vh - 32px);border:1px solid #dbe2ea;border-radius:16px;background:#fff;color:#202a36;box-shadow:0 18px 52px rgba(0,0,0,.28);font-size:var(--nqa-selection-view-font-size,14px);overflow:hidden}
+        #${SELECTION_VIEW_OVERLAY_ID} .nqa-selection-view-header{flex:0 0 auto;padding:22px 26px 18px;border-bottom:1px solid #e3e8ee}
+        #${SELECTION_VIEW_OVERLAY_ID} .nqa-selection-view-title{margin:0;font-size:1.35em;line-height:1.25;font-weight:650}
+        #${SELECTION_VIEW_OVERLAY_ID} .nqa-selection-view-fields{flex:1 1 auto;min-height:0;max-height:min(62vh,560px);overflow:auto;padding:16px 20px;overscroll-behavior:contain}
+        #${SELECTION_VIEW_OVERLAY_ID} .nqa-selection-view-table{width:100%;border-collapse:separate;border-spacing:0;table-layout:fixed;font-size:1em}
+        #${SELECTION_VIEW_OVERLAY_ID} .nqa-selection-view-table th,#${SELECTION_VIEW_OVERLAY_ID} .nqa-selection-view-table td{width:auto;padding:.65em 1em;border-bottom:1px solid #e1e6ed;text-align:left;vertical-align:top;line-height:1.4;overflow-wrap:anywhere;white-space:pre-wrap}
+        #${SELECTION_VIEW_OVERLAY_ID} .nqa-selection-view-table th{width:40%;font-weight:600;color:#536174}
+        #${SELECTION_VIEW_OVERLAY_ID} .nqa-selection-view-table td{font-weight:400;color:#202a36}
+        #${SELECTION_VIEW_OVERLAY_ID} .nqa-selection-view-table tr:nth-child(odd) th,#${SELECTION_VIEW_OVERLAY_ID} .nqa-selection-view-table tr:nth-child(odd) td{background:#f2f5f8}
+        #${SELECTION_VIEW_OVERLAY_ID} .nqa-selection-view-table tr:nth-child(even) th,#${SELECTION_VIEW_OVERLAY_ID} .nqa-selection-view-table tr:nth-child(even) td{background:#fff}
+        #${SELECTION_VIEW_OVERLAY_ID} .nqa-selection-view-table tr:last-child th,#${SELECTION_VIEW_OVERLAY_ID} .nqa-selection-view-table tr:last-child td{border-bottom:0}
+        #${SELECTION_VIEW_OVERLAY_ID} .nqa-selection-view-footer{display:flex;flex:0 0 auto;align-items:center;gap:10px;padding:14px 22px;border-top:1px solid #e3e8ee}
+        #${SELECTION_VIEW_OVERLAY_ID} .nqa-selection-view-count{min-width:3.5em;font-weight:650;color:#354254;font-variant-numeric:tabular-nums}
+        #${SELECTION_VIEW_OVERLAY_ID} .nqa-selection-view-keyboard-hint{font-size:.8em;color:#788597;white-space:nowrap}
+        #${SELECTION_VIEW_OVERLAY_ID} .nqa-export-modifier-chip{position:static!important;left:auto!important;top:auto!important;transform:none!important;margin-left:8px}
+        #${SELECTION_VIEW_OVERLAY_ID} .nqa-selection-view-spacer{flex:1 1 0}
+        #${SELECTION_VIEW_OVERLAY_ID} .nqa-selection-view-actions{display:flex;flex:0 0 auto;align-items:center;gap:8px}
+        #${SELECTION_VIEW_OVERLAY_ID} button{min-width:44px;min-height:44px;padding:8px 12px;border:1px solid #cbd3dd;border-radius:9px;background:#fff;color:#263342;font:inherit;line-height:1;cursor:pointer}
+        #${SELECTION_VIEW_OVERLAY_ID} button:hover:not(:disabled){background:#edf3fb;border-color:#9db5d4}
+        #${SELECTION_VIEW_OVERLAY_ID} button:focus-visible{outline:2px solid #3578e5;outline-offset:2px}
+        #${SELECTION_VIEW_OVERLAY_ID} button:disabled{background:#f0f2f5;color:#a6aeb9;border-color:#e0e4e9;cursor:default}
+        #${SELECTION_VIEW_OVERLAY_ID} .nqa-selection-view-copy,#${SELECTION_VIEW_OVERLAY_ID} .nqa-selection-view-close{min-width:96px;font-weight:600}
+        #${SELECTION_VIEW_OVERLAY_ID} .nqa-selection-view-copy{border-top-right-radius:0;border-bottom-right-radius:0;border-right:0}
+        #${SELECTION_VIEW_OVERLAY_ID} .nqa-copy-format-toggle{min-width:28px!important;border:1px solid #cbd3dd!important;border-left:0!important;border-radius:0 9px 9px 0!important;color:#263342!important;opacity:1}
+        #${SELECTION_VIEW_OVERLAY_ID}[data-theme="light"] .nqa-copy-format-control{border-radius:9px;--nqa-copy-format-control-background:#fff;--nqa-copy-format-hover-background:#f3f6fa}
+        #${SELECTION_VIEW_OVERLAY_ID}[data-theme="dark"] .nqa-copy-format-control{border-radius:9px;--nqa-copy-format-control-background:#292f38;--nqa-copy-format-hover-background:#343c48}
+        #${SELECTION_VIEW_OVERLAY_ID} .nqa-copy-format-control>:first-child,#${SELECTION_VIEW_OVERLAY_ID} .nqa-copy-format-control>.nqa-copy-format-toggle{background:transparent!important}
+        #${SELECTION_VIEW_OVERLAY_ID}[data-theme="dark"]{background:rgba(0,0,0,.62);color:#f1f4f8}
+        #${SELECTION_VIEW_OVERLAY_ID}[data-theme="dark"] .nqa-selection-view-dialog{border-color:#454d59;background:#292f38;color:#f1f4f8;box-shadow:0 18px 52px rgba(0,0,0,.58)}
+        #${SELECTION_VIEW_OVERLAY_ID}[data-theme="dark"] .nqa-selection-view-header,#${SELECTION_VIEW_OVERLAY_ID}[data-theme="dark"] .nqa-selection-view-footer{border-color:#424a56}
+        #${SELECTION_VIEW_OVERLAY_ID}[data-theme="dark"] .nqa-selection-view-table th{border-color:#424a56;color:#b9c4d2}
+        #${SELECTION_VIEW_OVERLAY_ID}[data-theme="dark"] .nqa-selection-view-table td{border-color:#424a56;color:#f1f4f8}
+        #${SELECTION_VIEW_OVERLAY_ID}[data-theme="dark"] .nqa-selection-view-table tr:nth-child(odd) th,#${SELECTION_VIEW_OVERLAY_ID}[data-theme="dark"] .nqa-selection-view-table tr:nth-child(odd) td{background:#333a45}
+        #${SELECTION_VIEW_OVERLAY_ID}[data-theme="dark"] .nqa-selection-view-table tr:nth-child(even) th,#${SELECTION_VIEW_OVERLAY_ID}[data-theme="dark"] .nqa-selection-view-table tr:nth-child(even) td{background:#292f38}
+        #${SELECTION_VIEW_OVERLAY_ID}[data-theme="dark"] .nqa-selection-view-count{color:#e6ebf2}
+        #${SELECTION_VIEW_OVERLAY_ID}[data-theme="dark"] .nqa-selection-view-keyboard-hint{color:#9ca8b8}
+        #${SELECTION_VIEW_OVERLAY_ID}[data-theme="dark"] button{border-color:#586271;background:#292f38;color:#f0f3f7}
+        #${SELECTION_VIEW_OVERLAY_ID}[data-theme="dark"] button:hover:not(:disabled){border-color:#7085a1;background:#343c48}
+        #${SELECTION_VIEW_OVERLAY_ID}[data-theme="dark"] button:disabled{border-color:#464e5a;background:#343a44;color:#788392}
+        #${SELECTION_VIEW_OVERLAY_ID}[data-theme="dark"] .nqa-selection-view-next:not(:disabled){border-color:#416b9c;background:#304a6e;color:#d6e8ff}
+        #${SELECTION_VIEW_OVERLAY_ID}[data-theme="dark"] .nqa-selection-view-copy{border-color:#586271;border-right:0}
+        #${SELECTION_VIEW_OVERLAY_ID}[data-theme="dark"] .nqa-copy-format-toggle{border-color:#586271!important;color:#f0f3f7!important}
+        @media(max-width:560px){#${SELECTION_VIEW_OVERLAY_ID}{padding:10px}#${SELECTION_VIEW_OVERLAY_ID} .nqa-selection-view-dialog{max-height:calc(100vh - 20px)}#${SELECTION_VIEW_OVERLAY_ID} .nqa-selection-view-header{padding:18px 16px 14px}#${SELECTION_VIEW_OVERLAY_ID} .nqa-selection-view-fields{padding:12px}#${SELECTION_VIEW_OVERLAY_ID} .nqa-selection-view-table th,#${SELECTION_VIEW_OVERLAY_ID} .nqa-selection-view-table td{padding:.6em .7em}#${SELECTION_VIEW_OVERLAY_ID} .nqa-selection-view-footer{gap:6px;padding:12px 10px}#${SELECTION_VIEW_OVERLAY_ID} .nqa-selection-view-keyboard-hint{font-size:.72em}#${SELECTION_VIEW_OVERLAY_ID} .nqa-selection-view-actions{gap:4px}#${SELECTION_VIEW_OVERLAY_ID} .nqa-selection-view-copy,#${SELECTION_VIEW_OVERLAY_ID} .nqa-selection-view-close{min-width:64px;padding:8px 6px}#${SELECTION_VIEW_OVERLAY_ID} .nqa-copy-format-toggle{min-width:28px!important;padding:8px 4px!important}}
+    `;
+    document.head.appendChild(style);
+}
+
+function closeSelectionRowView() {
+    if (selectionViewCleanup) selectionViewCleanup();
+}
+
+function openSelectionRowView(payload, returnFocusTarget) {
+    closeSelectionRowView();
+    ensureSelectionViewStyles();
+
+    const headers = Array.isArray(payload?.headers) ? payload.headers : [];
+    const rows = Array.isArray(payload?.rows) ? payload.rows : [];
+    if (!headers.length || !rows.length) return false;
+
+    const previousFocus = returnFocusTarget instanceof Element ? returnFocusTarget : document.activeElement;
+    const overlay = document.createElement('div');
+    overlay.id = SELECTION_VIEW_OVERLAY_ID;
+    overlay.setAttribute('data-theme', getSelectionViewTheme());
+    overlay.style.setProperty('--nqa-selection-view-font-size', `${getSelectionViewFontSize(headers.length)}px`);
+
+    const dialog = document.createElement('section');
+    dialog.className = 'nqa-selection-view-dialog';
+    dialog.setAttribute('role', 'dialog');
+    dialog.setAttribute('aria-modal', 'true');
+    dialog.setAttribute('aria-labelledby', `${SELECTION_VIEW_OVERLAY_ID}-title`);
+
+    const header = document.createElement('header');
+    header.className = 'nqa-selection-view-header';
+    const title = document.createElement('h2');
+    title.id = `${SELECTION_VIEW_OVERLAY_ID}-title`;
+    title.className = 'nqa-selection-view-title';
+    title.textContent = 'Selected item';
+    header.appendChild(title);
+
+    const fields = document.createElement('div');
+    fields.className = 'nqa-selection-view-fields';
+    fields.setAttribute('role', 'region');
+    fields.setAttribute('aria-label', 'Selected item details');
+    fields.tabIndex = 0;
+    const table = document.createElement('table');
+    table.className = 'nqa-selection-view-table';
+    const tbody = document.createElement('tbody');
+    table.appendChild(tbody);
+    fields.appendChild(table);
+
+    const footer = document.createElement('footer');
+    footer.className = 'nqa-selection-view-footer';
+    const count = document.createElement('span');
+    count.className = 'nqa-selection-view-count';
+    count.setAttribute('aria-live', 'polite');
+
+    const previousButton = document.createElement('button');
+    previousButton.type = 'button';
+    previousButton.setAttribute('aria-label', 'Previous selected item');
+    previousButton.textContent = '←';
+
+    const nextButton = document.createElement('button');
+    nextButton.type = 'button';
+    nextButton.className = 'nqa-selection-view-next';
+    nextButton.setAttribute('aria-label', 'Next selected item');
+    nextButton.textContent = '→';
+
+    const keyboardHint = document.createElement('span');
+    keyboardHint.className = 'nqa-selection-view-keyboard-hint';
+    keyboardHint.textContent = 'Esc to close';
+
+    const copyButton = document.createElement('button');
+    copyButton.type = 'button';
+    copyButton.className = 'nqa-selection-view-copy';
+    copyButton.setAttribute('aria-label', 'Copy displayed item');
+    copyButton.setAttribute(SELECTION_BUTTON_ATTR, '1');
+    copyButton.setAttribute('data-nqa-export-copy', '1');
+    copyButton.textContent = 'Copy';
+
+    const spacerBeforeHint = document.createElement('span');
+    spacerBeforeHint.className = 'nqa-selection-view-spacer';
+    const spacerAfterHint = document.createElement('span');
+    spacerAfterHint.className = 'nqa-selection-view-spacer';
+    const actions = document.createElement('div');
+    actions.className = 'nqa-selection-view-actions';
+    const copyCurrentView = (event, formatOverride = null, anchor = copyButton) => {
+        const currentRow = Array.isArray(rows[currentIndex]) ? rows[currentIndex] : [];
+        const transposedRows = headers.map((label, columnIndex) => [
+            String(label || `Column ${columnIndex + 1}`),
+            currentRow[columnIndex] ?? '',
+        ]);
+        return handleSelectionCopy(event, null, {
+            ...payload,
+            headers: [getInvestigationResultTableName() || 'Table', 'Value'],
+            rows: transposedRows,
+            feedbackCount: 1,
+            totalSelected: 1,
+            limitUsed: 1,
+            truncated: false,
+        }, formatOverride, anchor);
+    };
+    const copyControl = buildCopyFormatControl(copyButton, copyButton, (format, event, toggle) =>
+        copyCurrentView(event, format, toggle));
+    const closeButton = document.createElement('button');
+    closeButton.type = 'button';
+    closeButton.className = 'nqa-selection-view-close';
+    closeButton.textContent = 'Close';
+    closeButton.addEventListener('click', closeSelectionRowView);
+    actions.append(copyControl.root, closeButton);
+
+    footer.append(count, previousButton, nextButton, spacerBeforeHint, keyboardHint, spacerAfterHint, actions);
+    dialog.append(header, fields, footer);
+    overlay.appendChild(dialog);
+    document.body.appendChild(overlay);
+    const onOverlayClick = (event) => {
+        if (event.target === overlay) closeSelectionRowView();
+    };
+    overlay.addEventListener('click', onOverlayClick);
+    registerClipboardTooltipTarget(copyButton);
+    registerModifierIndicatorTarget(copyButton);
+
+    let currentIndex = 0;
+    const renderRow = () => {
+        const values = Array.isArray(rows[currentIndex]) ? rows[currentIndex] : [];
+        const fragment = document.createDocumentFragment();
+        headers.forEach((label, columnIndex) => {
+            const row = document.createElement('tr');
+            const nameCell = document.createElement('th');
+            nameCell.scope = 'row';
+            nameCell.textContent = String(label || `Column ${columnIndex + 1}`);
+            const valueCell = document.createElement('td');
+            valueCell.textContent = String(values[columnIndex] ?? '');
+            row.append(nameCell, valueCell);
+            fragment.appendChild(row);
+        });
+        tbody.replaceChildren(fragment);
+        count.textContent = `${currentIndex + 1} / ${rows.length}`;
+        previousButton.disabled = currentIndex === 0;
+        nextButton.disabled = currentIndex === rows.length - 1;
+        fields.scrollTop = 0;
+    };
+
+    const showPreviousRow = () => {
+        if (currentIndex > 0) {
+            currentIndex -= 1;
+            renderRow();
+        }
+    };
+    const showNextRow = () => {
+        if (currentIndex < rows.length - 1) {
+            currentIndex += 1;
+            renderRow();
+        }
+    };
+    previousButton.addEventListener('click', showPreviousRow);
+    nextButton.addEventListener('click', showNextRow);
+    copyButton.addEventListener('click', (event) => copyCurrentView(event));
+
+    const onKeyDown = (event) => {
+        if (event.key === 'Escape') {
+            const openCopyPopover = overlay.querySelector('.nqa-copy-format-popover:popover-open');
+            if (openCopyPopover) {
+                event.preventDefault();
+                event.stopPropagation();
+                try { openCopyPopover.hidePopover(); } catch (_) {}
+                try { openCopyPopover.previousElementSibling?.focus({ preventScroll: true }); } catch (_) {}
+                return;
+            }
+            event.preventDefault();
+            event.stopPropagation();
+            closeSelectionRowView();
+            return;
+        }
+        if (event.altKey || event.ctrlKey || event.metaKey) return;
+        if (event.key === 'ArrowLeft') {
+            event.preventDefault();
+            event.stopPropagation();
+            showPreviousRow();
+        } else if (event.key === 'ArrowRight') {
+            event.preventDefault();
+            event.stopPropagation();
+            showNextRow();
+        }
+    };
+    document.addEventListener('keydown', onKeyDown, true);
+
+    const themeObserver = typeof MutationObserver === 'function' ? new MutationObserver(() => {
+        overlay.setAttribute('data-theme', getSelectionViewTheme());
+    }) : null;
+    try { themeObserver?.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme', 'class'] }); } catch (_) {}
+
+    selectionViewCleanup = () => {
+        try { document.removeEventListener('keydown', onKeyDown, true); } catch (_) {}
+        try { overlay.removeEventListener('click', onOverlayClick); } catch (_) {}
+        try { themeObserver?.disconnect(); } catch (_) {}
+        unregisterModifierIndicatorTarget(copyButton);
+        unregisterClipboardTooltipTarget(copyButton);
+        try { overlay.remove(); } catch (_) {}
+        selectionViewCleanup = null;
+        if (previousFocus instanceof HTMLElement && previousFocus.isConnected) {
+            try { previousFocus.focus({ preventScroll: true }); } catch (_) {}
+        }
+    };
+
+    renderRow();
+    closeButton.focus({ preventScroll: true });
+    return true;
+}
+
+function handleSelectionView(event) {
+    let anchor = null;
+    if (event) {
+        try { event.preventDefault(); } catch (_) {}
+        try { event.stopPropagation(); } catch (_) {}
+        anchor = event.currentTarget instanceof Element
+            ? event.currentTarget
+            : event.target?.closest(`[${SELECTION_BUTTON_ATTR}], button, [role="menuitem"]`);
+    }
+
+    const api = window.NqaExport;
+    if (!api || typeof api.collectSelectionData !== 'function') return;
+    const payload = api.collectSelectionData({ includeAll: true });
+    if (!payload.rows?.length || !payload.headers?.length) {
+        api.showToast('No selected rows to view.', { anchor });
+        return;
+    }
+    if (!openSelectionRowView(payload, anchor)) {
+        api.showToast('Unable to read selected rows.', { anchor });
+    }
+}
+
 // Handle click on "Copy selection" (collect data, build clipboard payload, show toast).
-async function handleSelectionCopy(event) {
+async function handleSelectionCopy(event, collectOptions, payloadOverride = null, explicitFormat = null, anchorOverride = null) {
     let anchor = null;
     if (event) {
         try { event.preventDefault(); } catch (_) {}
@@ -1664,25 +2388,32 @@ async function handleSelectionCopy(event) {
             ? event.currentTarget
             : event.target?.closest(`[${SELECTION_BUTTON_ATTR}], button, [role="menuitem"]`);
     }
+    if (anchorOverride instanceof Element) anchor = anchorOverride;
     const api = window.NqaExport;
     if (!api) return;
-    const payload = api.collectSelectionData();
+    const payload = payloadOverride || api.collectSelectionData(collectOptions);
+    if (payload.columnMissing) {
+        api.showToast('Unable to read selected column', { anchor });
+        return;
+    }
     if (!Array.isArray(payload.rows) || !payload.rows.length) {
         api.showToast('No rows selected', { anchor });
         return;
     }
-    const modifier = getActiveModifierState();
-    const formatOverride = modifier?.format || null;
+    const modifier = explicitFormat ? null : getActiveModifierState();
+    const formatOverride = explicitFormat || modifier?.format || null;
     const clipboardData = api.buildClipboardData
         ? api.buildClipboardData(payload, formatOverride)
         : { plain: api.buildPlainText(payload, formatOverride || undefined) };
     const ok = await api.copyToClipboard(clipboardData);
-    const formatLabel = modifier?.label || '';
+    const formatLabel = explicitFormat
+        ? describeClipboardFormatForUi(explicitFormat)
+        : modifier?.label || '';
     api.showToast(ok ? buildSelectionFeedback('copy', payload, formatLabel) : 'Unable to copy selection', { anchor });
 }
 
 // Handle click on "Download CSV" (collect data, serialize, show toast).
-function handleSelectionDownload(event) {
+function handleSelectionDownload(event, collectOptions) {
     let anchor = null;
     if (event) {
         try { event.preventDefault(); } catch (_) {}
@@ -1693,7 +2424,11 @@ function handleSelectionDownload(event) {
     }
     const api = window.NqaExport;
     if (!api) return;
-    const payload = api.collectSelectionData();
+    const payload = api.collectSelectionData(collectOptions);
+    if (payload.columnMissing) {
+        api.showToast('Unable to read selected column', { anchor });
+        return;
+    }
     if (!Array.isArray(payload.rows) || !payload.rows.length) {
         api.showToast('No rows selected', { anchor });
         return;

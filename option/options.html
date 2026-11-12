@@ -75,11 +75,15 @@
                   <input type="radio" name="clipboardFormat" value="ascii" />
                   <span>ASCII table</span>
                 </label>
+                <label class="radio-option">
+                  <input type="radio" name="clipboardFormat" value="tsv" />
+                  <span>TSV (Excel)</span>
+                </label>
               </div>
               <div class="help-text">Choose how copied selections are formatted.</div>
               <div class="modifier-card" id="clipboardModifierCard" aria-live="polite">
                 <div class="modifier-card-title">Quick toggles</div>
-                <p class="modifier-card-desc">Hold a modifier while clicking "Copy selection" to switch format just once.</p>
+                <p class="modifier-card-desc">Hold the indicated key while clicking "Copy selection" to switch format just once.</p>
                 <ul class="modifier-card-list">
                   <li class="modifier-card-item" id="clipboardModifierAltRow">
                     <span class="modifier-key"><kbd>Alt</kbd></span>

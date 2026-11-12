@@ -55,6 +55,7 @@
     function ensureStyles() {
         if (document.getElementById("nqa-cheatsheet-style")) return;
         const css = `
+    #nqa-cheatsheet-toggle a, #nqa-cheatsheet-toggle a *{color:#fff!important}
     button#nqa-cheatsheet-toggle{position:fixed;right:16px;bottom:16px;z-index:2147483647;background:#fff;border-radius:20px;border:1px solid rgba(0,0,0,0.15);padding:6px;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,0.2)}
     button#nqa-cheatsheet-toggle:hover{background:#f6f6f6}
     button#nqa-cheatsheet-toggle svg{display:block}

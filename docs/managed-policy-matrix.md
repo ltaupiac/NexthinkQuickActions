@@ -11,3 +11,5 @@ The table below summarises how the extension behaves under each managed configur
 | seed    | n/a              | n/a                | `false` (default) | On first load, managed menu seeds the user profile only if it was empty. | After seeding, items become normal user entries (all actions allowed). | User manages everything afterwards. | Managed instance copied once; user can edit later. | One-time baseline without overwriting existing data. |
 | seed    | n/a              | n/a                | `true`      | On first load, managed menu replaces the entire user list. | Items become user-owned and fully editable. | User manages everything. | Instance replaced then editable. | Useful for resetting all users to an admin-defined set. |
 
+Managed `exportPrefs` are defaults, not locked settings. In overlay mode, user preferences stored in sync—including values restored from an imported backup—take precedence. `lockManagedEntries` applies to the tenant and managed menu entries, not export preferences.
+

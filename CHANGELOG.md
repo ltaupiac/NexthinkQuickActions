@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.0.8
+
+- Feat: Added column-specific copy and CSV export for selected rows across investigation tables.
+- Feat: Added a form view with keyboard navigation, outside-click close, and table-labeled row copy.
+- Feat: Restore export preferences from backups, overriding managed defaults.
+- Feat: Add TSV and one-time format selectors to all copy actions.
+- Fix: Match injected selection actions to native menu colors across investigation tables.
+
 ## v1.0.7
 
 - Fix: Restored selection NAQ menu in the new Nexthink Infinity interface introduced in 2026.9.

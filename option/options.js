@@ -75,8 +75,8 @@ function initTemplateController(opts) {
 }
 
 function initExportPrefs(opts) {
-    if (typeof window.initNqaExportPrefs !== "function") return;
-    window.initNqaExportPrefs(opts);
+    if (typeof window.initNqaExportPrefs !== "function") return null;
+    return window.initNqaExportPrefs(opts);
 }
 
 function initMenuController(opts) {
@@ -276,6 +276,7 @@ function initImportExportToolbar(opts) {
         importReplaceBtn,
         store,
         instanceController,
+        exportPrefsController,
     } = opts;
     try {
         const toolbar = new window.NqaImportExportToolbar({
@@ -290,6 +291,11 @@ function initImportExportToolbar(opts) {
                 importReplaceBtn,
             },
             store,
+            onExportPrefsImported: (prefs) => {
+                try {
+                    exportPrefsController?.afterImport?.(prefs);
+                } catch (_) {}
+            },
             onMenuChanged: () => {
                 try {
                     window.__nqaMenuController?.render?.();
@@ -434,7 +440,7 @@ document.addEventListener("DOMContentLoaded", () => {
         },
     });
 
-    initExportPrefs({
+    const exportPrefsController = initExportPrefs({
         store,
         csvDelimiterInput,
         csvDelimiterErr,
@@ -503,6 +509,7 @@ document.addEventListener("DOMContentLoaded", () => {
         importReplaceBtn,
         store,
         instanceController,
+        exportPrefsController,
     });
 
     attachEscapeHandler({

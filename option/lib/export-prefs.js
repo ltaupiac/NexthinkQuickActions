@@ -34,6 +34,7 @@
             csvDelimiter: DEFAULT_EXPORT_PREFS.csvDelimiter,
             clipboardFormat: DEFAULT_EXPORT_PREFS.clipboardFormat,
         };
+        let importApplied = false;
 
         const toDisplayDelimiter = (value) => (value === "\t" ? "\\t" : value);
         const fromDisplayDelimiter = (value) =>
@@ -80,15 +81,8 @@
                 (entry) => entry.value !== selectedEntry.value
             );
 
-            const pickEntry = (idx) => {
-                if (alternatives[idx]) return alternatives[idx];
-                if (alternatives.length)
-                    return alternatives[alternatives.length - 1];
-                return selectedEntry;
-            };
-
-            const altEntry = pickEntry(0);
-            const shiftEntry = pickEntry(1);
+            const altEntry = alternatives[0] || null;
+            const shiftEntry = alternatives[1] || altEntry;
 
             if (modifierAltLabel)
                 modifierAltLabel.textContent = altEntry?.label || "—";
@@ -107,7 +101,6 @@
                     !shiftEntry || shiftEntry.value === selectedEntry.value
                 );
             }
-
             modifierCard.hidden = entries.length < 2;
         };
 
@@ -139,7 +132,7 @@
                     DEFAULT_EXPORT_PREFS.csvDelimiter;
             }
             if (radios.length) {
-                const acceptable = ["markdown", "ascii", "html"];
+                const acceptable = ["markdown", "ascii", "html", "tsv"];
                 const fmt = acceptable.includes(effective.clipboardFormat)
                     ? effective.clipboardFormat
                     : DEFAULT_EXPORT_PREFS.clipboardFormat;
@@ -169,10 +162,21 @@
         const loadExportPrefs = async () => {
             try {
                 const prefs = await store.getExportPrefs();
-                populateExportForm(prefs);
+                if (!importApplied) populateExportForm(prefs);
             } catch (_) {
-                populateExportForm(DEFAULT_EXPORT_PREFS);
+                if (!importApplied) populateExportForm(DEFAULT_EXPORT_PREFS);
             }
+        };
+
+        const afterImport = (prefs) => {
+            if (exportAutosaveTimer) {
+                clearTimeout(exportAutosaveTimer);
+                exportAutosaveTimer = null;
+            }
+            importApplied = true;
+            populateExportForm(prefs);
+            showExportStatus("Export preferences restored.");
+            broadcastExportPrefs(prefs);
         };
 
         const handleExportSave = async () => {
@@ -243,6 +247,8 @@
 
         loadExportPrefs();
         updateClipboardModifierHints();
+
+        return { afterImport };
     }
 
     window.initNqaExportPrefs = initNqaExportPrefs;

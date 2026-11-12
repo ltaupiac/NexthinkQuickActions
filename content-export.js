@@ -244,16 +244,28 @@
         });
     }
 
-    // Assemble headers + selected rows, enforcing an optional cap on the number of rows.
+    // Assemble headers + selected rows, enforcing the export cap unless a caller needs all rows.
     function collectSelectionData(options) {
-        const defs = getColumnDefinitions();
+        const allDefs = getColumnDefinitions();
+        const restrictToColumn = options && Object.prototype.hasOwnProperty.call(options, 'columnIndex');
+        const defs = restrictToColumn
+            ? allDefs.filter((def) => def.index === options.columnIndex)
+            : allDefs;
         const selection = getCheckedRowCheckboxes();
         const totalSelected = selection.length;
         if (!defs.length || !totalSelected) {
-            return { headers: defs.map((d) => d.label), rows: [], totalSelected, truncated: false };
+            return {
+                headers: defs.map((d) => d.label),
+                rows: [],
+                totalSelected,
+                truncated: false,
+                ...(restrictToColumn && !defs.length ? { columnMissing: true } : {}),
+            };
         }
 
-        const limit = Math.max(1, Math.min(runtimeConfig.maxRows, Number.isFinite(options?.limit) && options.limit > 0 ? Math.floor(options.limit) : runtimeConfig.maxRows));
+        const limit = options?.includeAll === true
+            ? selection.length
+            : Math.max(1, Math.min(runtimeConfig.maxRows, Number.isFinite(options?.limit) && options.limit > 0 ? Math.floor(options.limit) : runtimeConfig.maxRows));
         const rows = [];
         for (let i = 0; i < selection.length && rows.length < limit; i += 1) {
             const row = getRowFromCheckbox(selection[i]);
@@ -373,7 +385,7 @@
         return lines.join('\n');
     }
 
-    // Switchboard that renders the selection into Markdown, ASCII or TSV text.
+    // Render the selection as Markdown, ASCII, or delimited plain text.
     function buildPlainText(payload, format) {
         if (!payload || !Array.isArray(payload.rows)) return '';
         const headers = Array.isArray(payload.headers) ? payload.headers : [];

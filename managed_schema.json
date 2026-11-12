@@ -20,7 +20,7 @@
                 },
                 "lockManagedEntries": {
                     "type": "boolean",
-                    "description": "In overlay mode, prevent editing/removing of managed-provided entries (recommended)"
+                    "description": "In overlay mode, lock the managed tenant and managed menu entries; export preferences remain user-overridable (recommended)"
                 },
                 "seedReplace": {
                     "type": "boolean",
@@ -94,7 +94,7 @@
         },
         "exportPrefs": {
             "type": "object",
-            "description": "Export preferences applied to selection export helpers",
+            "description": "Default export preferences. User preferences and imported backups take priority; these values are not locked.",
             "properties": {
                 "csvDelimiter": {
                     "type": "string",

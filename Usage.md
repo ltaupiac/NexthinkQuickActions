@@ -30,7 +30,7 @@ This guide explains how to configure and use the Nexthink Quick Actions browser 
    - Managed (locked) items may be present if your administrator preconfigured them.
 5. **Tune export settings (optional)**
    - In the *Export settings* card, adjust the **CSV separator** used when downloading selections.
-   - Pick the **Clipboard format** (`Markdown`, `ASCII table`, or `HTML table`) applied when copying rows from Investigations. The card displays a *Quick toggles* reminder that tells you which modifier keys (`Alt` for the second format, `Shift` for the third) will temporarily override the default when you copy a selection. Use the HTML option when pasting into Outlook or other rich-text editors.
+   - Pick the **Clipboard format** (`HTML table`, `Markdown`, `ASCII table`, or `TSV`) applied when copying rows from Investigations. The *Quick toggles* card shows which formats `Alt` and `Shift` temporarily select. The dropdown beside each copy action offers a one-time format choice without changing the default. Choose TSV for tab-separated text such as a direct paste into Excel; use HTML when pasting into Outlook or another rich-text editor.
    - Changes are saved automatically as soon as you leave the field or switch formats; no extra button is required.
 
 ## 3. Use quick actions inside Nexthink
@@ -55,16 +55,28 @@ This guide explains how to configure and use the Nexthink Quick Actions browser 
 
 ## 6. Export selected rows from Investigations
 1. Select one or more rows in an Investigation (use the checkboxes on the left).
-2. The Nexthink selection toolbar appears; it now includes the Spark icon followed by two actions:
-   - **Copy selection** – copies the selected rows plus column headers to the clipboard using the format chosen in the options page. Hold `Alt` or `Shift` while clicking to momentarily switch to the alternate formats shown in the options card; a small badge (e.g., `(Markdown)`) appears next to the button when a modifier is active, and the toast message indicates the format that was used.
+2. The Nexthink selection toolbar appears; after the Spark icon it includes these actions:
+   - **Copy selection** – copies the selected rows plus column headers to the clipboard using the format chosen in the options page. Hold `Alt` or `Shift` while clicking to momentarily switch to the alternate formats shown in the options card. Use the arrow beside the button to copy once in any of the four formats without changing the default. A small badge (e.g., `(Markdown)`) appears when a modifier is active, and the toast indicates the format used.
    - **Download CSV** – downloads a CSV file using the configured separator.
+   - **View** – opens the selected rows one at a time in a form (see below).
 3. Toast notifications confirm the number of rows exported and warn when a row limit is reached (default 200).
-4. When copying in ASCII format, paste into a monospaced font (Courier, Consolas, Monaco, Menlo, etc.) so the table columns stay aligned. HTML table output keeps the layout intact in Outlook and other HTML-aware clients.
+4. When copying in ASCII format, paste into a monospaced font (Courier, Consolas, Monaco, Menlo, etc.) so the table columns stay aligned. TSV separates columns with tab characters and is suited to direct spreadsheet pasting. HTML table output keeps the layout intact in Outlook and other HTML-aware clients.
+
+### Copy or download one selected column
+- With at least one row selected, open the three-dot menu in the header of the column you want to export.
+- Open **Quick Actions**, then choose **Copy selection** or **Download CSV**. These actions include only that column's values for the currently selected rows, in table order, with the column name as the header.
+- Column copying uses the same clipboard format settings and `Alt` and `Shift` shortcuts as the selection toolbar. Its format selector offers the same one-time format choices. CSV uses the configured separator. The Quick Actions entry is hidden when no rows are selected.
+
+### View selected rows as forms
+- Choose **View** in the selection toolbar. The first selected row in the table's visible order opens as a form, with each column name beside its value. The counter shows the current row and the number selected.
+- Use **Previous** and **Next**, or the keyboard's left and right arrow keys, to move through the selected rows. Navigation stops at the first and last row.
+- **Copy** copies the current form as a two-column table: the investigation's table name and `Value` are the headers, followed by one row per field. It uses the configured clipboard format; `Alt` and `Shift` still select the alternate formats, and the adjacent dropdown offers one-time choices in all four formats.
+- Close the form with **Close**, `Escape`, or by clicking outside it. Closing the form leaves the row selection unchanged.
 
 ## 7. Importing or exporting configurations
-- On the options page, use the **Export** button to download a JSON backup of your menus and instance.
-- Use **Import** to load a JSON file (for example one shared by your team or generated from another browser). Choose *Add* to append entries or *Replace* to overwrite your current list.
-- When importing, the dialog shows whether an instance will be updated in addition to the menu entries.
+- On the options page, use the **Export** button to download a JSON backup of your menus, instance, and export preferences.
+- Use **Import** to load a JSON file (for example one shared by your team or generated from another browser). Choose *Add* to append entries or *Replace* to overwrite your current list. Export preferences are restored with either choice when present; older files without them leave your current preferences unchanged.
+- When importing, the dialog indicates whether the file contains an instance or export preferences in addition to menu entries. Imported export preferences override administrator-provided defaults; tenant and menu locks are unaffected.
 
 ## 8. Tips & best practices
 - Keep menu names short and action-oriented (e.g. `Open in ServiceNow`).
